@@ -71,7 +71,7 @@ internal object DebugLog {
                     val dir = File(base, "ImageSeek/logs").apply { mkdirs() }
                     val file = File(dir, name)
                     fallbackLogFile = file
-                    writer = file.outputStream().bufferedWriter(StandardCharsets.UTF_8, 32 * 1024)
+                    writer = BufferedWriter(OutputStreamWriter(file.outputStream(), StandardCharsets.UTF_8), 32 * 1024)
                 }.onFailure {
                     Log.e(TAG, "Unable to create debug log", mediaStoreFailure)
                     Log.e(TAG, "Fallback log creation also failed", it)
