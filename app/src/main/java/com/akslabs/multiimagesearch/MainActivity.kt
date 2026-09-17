@@ -7,57 +7,29 @@ import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.system.Os
-import android.system.OsConstants
-import android.view.WindowManager
-import android.webkit.CookieManager
 import android.webkit.RenderProcessGoneDetail
-import android.webkit.SafeBrowsingResponse
-import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
-import android.webkit.WebSettings
-import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
@@ -65,40 +37,26 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.IOException
 import java.net.URI
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
@@ -255,11 +213,12 @@ private fun SelectionScreen(bitmap: Bitmap?, quality: Quality, engine: Engine, d
     Scaffold(contentWindowInsets = WindowInsets.safeDrawing, topBar = { TopAppBar(title = { Text("图搜 · ImageSeek DEBUG") }) }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Text("详细日志已开启")
+            Text("日志: ${DebugLog.location()}")
+            Text("图片处理状态: ${if (decoding) "读取中" else "空闲"}")
             Button(onClick = onPickPhoto) { Text("选择照片") }
             OutlinedButton(onClick = onPickFile) { Text("文件") }
             LazyRow { items(Quality.entries) { FilterChip(selected = it == quality, onClick = { onQualityChanged(it) }, label = { Text(it.title) }) } }
             LazyRow { items(Engine.entries) { FilterChip(selected = it == engine, onClick = { onEngineChanged(it) }, label = { Text(it.shortTitle) }) } }
-            Text("日志: ${DebugLog.location()}")
             error?.let { Text(it) }
             Button(onClick = onSearch, enabled = bitmap != null && !uploading) { Text(if (uploading) "上传中" else "搜索") }
         }
@@ -270,28 +229,72 @@ private fun SelectionScreen(bitmap: Bitmap?, quality: Quality, engine: Engine, d
 private fun ResultsScreen(hostedUrl:String, engine:Engine, onEngineChanged:(Engine)->Unit, onBack:()->Unit) {
     val url = remember(hostedUrl, engine) { engine.searchUrl(hostedUrl) }
     var webView by remember { mutableStateOf<WebView?>(null) }
-    Scaffold { padding -> AndroidView(Modifier.fillMaxSize().padding(padding), factory = { ctx -> secureWebView(ctx).also { webView=it; it.loadUrl(url) } }) }
+    LaunchedEffect(engine) { DebugLog.i("WEBVIEW", "engine=${engine.name} hostedUrl=$hostedUrl searchUrl=$url") }
+    Scaffold { padding ->
+        AndroidView(
+            factory = { ctx ->
+                secureWebView(ctx).also {
+                    webView = it
+                    DebugLog.i("WEBVIEW", "loadUrl=$url")
+                    it.loadUrl(url)
+                }
+            },
+            modifier = Modifier.fillMaxSize().padding(padding),
+            update = { view ->
+                if (view.url != url) {
+                    DebugLog.i("WEBVIEW", "switch loadUrl=$url old=${view.url}")
+                    view.loadUrl(url)
+                }
+            }
+        )
+    }
 }
 
 private fun secureWebView(context: Context): WebView = WebView(context).apply {
     settings.javaScriptEnabled = true
     settings.domStorageEnabled = true
+    settings.allowFileAccess = false
+    settings.allowContentAccess = false
+    DebugLog.i("WEBVIEW", "created userAgent=${settings.userAgentString} js=${settings.javaScriptEnabled} dom=${settings.domStorageEnabled}")
     webViewClient = object: WebViewClient() {
-        override fun onPageFinished(view: WebView?, url: String?) { DebugLog.i("WEBVIEW", "finished=$url") }
-        override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) { DebugLog.e("WEBVIEW", "error=$error url=${request?.url}") }
-        override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean { DebugLog.e("WEBVIEW", "gone=$detail"); return true }
+        override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+            DebugLog.i("WEBVIEW", "navigate url=${request?.url} method=${request?.method} headers=${request?.requestHeaders} mainFrame=${request?.isForMainFrame}")
+            return request?.url?.scheme?.lowercase() != "https"
+        }
+
+        override fun onPageFinished(view: WebView?, url: String?) {
+            DebugLog.i("WEBVIEW", "finished=$url title=${view?.title} progress=${view?.progress}")
+        }
+
+        override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
+            DebugLog.e("WEBVIEW", "errorCode=${error?.errorCode} description=${error?.description} url=${request?.url} headers=${request?.requestHeaders}")
+        }
+
+        override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+            DebugLog.e("WEBVIEW", "gone didCrash=${detail?.didCrash()} priority=${detail?.rendererPriorityAtExit()} url=${view?.url}")
+            view?.destroy()
+            return true
+        }
     }
 }
 
-@Composable
-private fun DiagnosticsDialog(onDismiss:()->Unit) { onDismiss() }
-
-private fun diagnosticsText(context:Context):String = "ImageSeek ${DebugLog.location()}"
-
 private fun decodeImage(context: Context, uri: Uri, maxDimension: Int): Bitmap {
+    val started = System.nanoTime()
+    DebugLog.i("DECODE", "start uri=$uri maxDimension=$maxDimension")
     val source = ImageDecoder.createSource(context.contentResolver, uri)
     return ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
-        val scale = maxDimension.toFloat() / maxOf(info.size.width, info.size.height)
-        if (scale < 1) decoder.setTargetSize((info.size.width * scale).roundToInt(), (info.size.height * scale).roundToInt())
+        val width = info.size.width
+        val height = info.size.height
+        DebugLog.i("DECODE", "header width=$width height=$height mime=${info.mimeType} colorSpace=${info.colorSpace}")
+        val longest = maxOf(width, height)
+        if (longest > maxDimension) {
+            val scale = maxDimension.toFloat() / longest
+            val targetWidth = (width * scale).roundToInt().coerceAtLeast(1)
+            val targetHeight = (height * scale).roundToInt().coerceAtLeast(1)
+            DebugLog.i("DECODE", "resize ${width}x$height -> ${targetWidth}x$targetHeight")
+            decoder.setTargetSize(targetWidth, targetHeight)
+        }
+    }.also {
+        DebugLog.i("DECODE", "complete result=${it.width}x${it.height} bytes=${it.byteCount} elapsedMs=${(System.nanoTime() - started) / 1_000_000L}")
     }
 }
