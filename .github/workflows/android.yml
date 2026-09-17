@@ -45,25 +45,62 @@ jobs:
       - name: Audit APK
         shell: bash
         run: |
+          set -euo pipefail
           APK="app/build/outputs/apk/debug/app-debug.apk"
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
           test -f "$APK"
-          echo "APK: $APK"
+
+          echo "--- APK digest ---"
           sha256sum "$APK"
-          echo "--- Native libraries ---"
-          if unzip -l "$APK" | grep -E 'lib/[^/]+/.*\.so$'; then
-            echo "Unexpected native libraries found" >&2
-            exit 1
-          fi
-          echo "No native .so files"
+
+          echo "--- APK identity ---"
+          BADGING=$("$BUILD_TOOLS/aapt" dump badging "$APK")
+          echo "$BADGING" | grep -m1 '^package:'
+          echo "$BADGING" | grep -m1 '^targetSdkVersion:'
+          echo "$BADGING" | grep -q "package: name='com.akslabs.multiimagesearch'"
+          echo "$BADGING" | grep -q "versionCode='210'"
+          echo "$BADGING" | grep -q "versionName='2.1.0'"
+          echo "$BADGING" | grep -q "targetSdkVersion:'36'"
+
+          echo "--- Signature ---"
+          "$BUILD_TOOLS/apksigner" verify --verbose "$APK"
+
           echo "--- Manifest permissions ---"
-          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump permissions "$APK"
-          PERMS=$("$ANDROID_HOME/build-tools/35.0.0/aapt" dump permissions "$APK" | grep "uses-permission:" || true)
+          PERMS=$("$BUILD_TOOLS/aapt" dump permissions "$APK" | grep "uses-permission:" || true)
           echo "$PERMS"
           echo "$PERMS" | grep -q "android.permission.INTERNET"
           if echo "$PERMS" | grep -Ev 'android\.permission\.INTERNET|^$'; then
             echo "Unexpected permission found" >&2
             exit 1
           fi
+
+          echo "--- Native libraries ---"
+          mapfile -t NATIVE_LIBS < <(unzip -Z1 "$APK" | grep -E '^lib/[^/]+/[^/]+\.so$' || true)
+          rm -rf /tmp/imageseek-native-audit
+          mkdir -p /tmp/imageseek-native-audit
+          for LIB in "${NATIVE_LIBS[@]}"; do
+            echo "$LIB"
+            if [[ "$(basename "$LIB")" != "libandroidx.graphics.path.so" ]]; then
+              echo "Unexpected native library: $LIB" >&2
+              exit 1
+            fi
+            OUT="/tmp/imageseek-native-audit/${LIB//\//_}"
+            unzip -p "$APK" "$LIB" > "$OUT"
+            mapfile -t LOAD_ALIGNS < <(readelf -lW "$OUT" | awk '$1 == "LOAD" { print $NF }')
+            if (( ${#LOAD_ALIGNS[@]} == 0 )); then
+              echo "No ELF LOAD segments found in $LIB" >&2
+              exit 1
+            fi
+            for ALIGN in "${LOAD_ALIGNS[@]}"; do
+              if (( ALIGN < 0x4000 )); then
+                echo "$LIB has LOAD alignment below 16 KiB: $ALIGN" >&2
+                exit 1
+              fi
+            done
+          done
+
+          echo "--- 16 KiB APK zip alignment ---"
+          "$BUILD_TOOLS/zipalign" -v -c -P 16 4 "$APK"
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
