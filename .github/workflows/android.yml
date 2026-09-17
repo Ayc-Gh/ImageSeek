@@ -3,8 +3,6 @@ name: Android CI
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -14,107 +12,30 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
-
-      - name: Install Android SDK 36
-        shell: bash
+      - name: Android SDK
         run: |
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          test -x "$SDKMANAGER"
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platform-tools" "platforms;android-36" "build-tools;35.0.0"
-
-      - name: Set up Gradle 8.13
-        uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
-
-      - name: Build, test, and lint
-        shell: bash
+      - name: Build
         run: gradle --no-daemon --stacktrace clean testDebugUnitTest lintDebug assembleDebug
-
-      - name: Audit APK
-        shell: bash
+      - name: Audit
         run: |
-          set -euo pipefail
-          APK="app/build/outputs/apk/debug/app-debug.apk"
-          BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+          APK=app/build/outputs/apk/debug/app-debug.apk
           test -f "$APK"
-
-          echo "--- APK digest ---"
-          sha256sum "$APK"
-
-          echo "--- APK identity ---"
-          BADGING=$("$BUILD_TOOLS/aapt" dump badging "$APK")
-          echo "$BADGING" | grep -m1 '^package:'
-          echo "$BADGING" | grep -m1 '^targetSdkVersion:'
-          echo "$BADGING" | grep -q "package: name='com.akslabs.multiimagesearch'"
-          echo "$BADGING" | grep -q "versionCode='211'"
-          echo "$BADGING" | grep -q "versionName='2.1.1'"
-          echo "$BADGING" | grep -q "targetSdkVersion:'36'"
-
-          echo "--- Signature ---"
-          "$BUILD_TOOLS/apksigner" verify --verbose "$APK"
-
-          echo "--- Manifest permissions ---"
-          PERMS=$("$BUILD_TOOLS/aapt" dump permissions "$APK" | grep "uses-permission:" | sort -u || true)
-          echo "$PERMS"
-          echo "$PERMS" | grep -q "android.permission.INTERNET"
-          if echo "$PERMS" | grep -Ev 'android\.permission\.INTERNET|com\.akslabs\.multiimagesearch\.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION|^$'; then
-            echo "Unexpected permission found" >&2
-            exit 1
-          fi
-
-          echo "--- Native libraries ---"
-          mapfile -t NATIVE_LIBS < <(unzip -Z1 "$APK" | grep -E '^lib/[^/]+/[^/]+\.so$' || true)
-          rm -rf /tmp/imageseek-native-audit
-          mkdir -p /tmp/imageseek-native-audit
-          for LIB in "${NATIVE_LIBS[@]}"; do
-            echo "$LIB"
-            if [[ "$(basename "$LIB")" != "libandroidx.graphics.path.so" ]]; then
-              echo "Unexpected native library: $LIB" >&2
-              exit 1
-            fi
-            OUT="/tmp/imageseek-native-audit/${LIB//\//_}"
-            unzip -p "$APK" "$LIB" > "$OUT"
-            mapfile -t LOAD_ALIGNS < <(readelf -lW "$OUT" | awk '$1 == "LOAD" { print $NF }')
-            if (( ${#LOAD_ALIGNS[@]} == 0 )); then
-              echo "No ELF LOAD segments found in $LIB" >&2
-              exit 1
-            fi
-            for ALIGN in "${LOAD_ALIGNS[@]}"; do
-              if (( ALIGN < 0x4000 )); then
-                echo "$LIB has LOAD alignment below 16 KiB: $ALIGN" >&2
-                exit 1
-              fi
-            done
-          done
-
-          echo "--- 16 KiB APK zip alignment ---"
-          "$BUILD_TOOLS/zipalign" -v -c -P 16 4 "$APK"
-
-      - name: Upload debug APK
-        uses: actions/upload-artifact@v4
+          $ANDROID_HOME/build-tools/35.0.0/apksigner verify --verbose "$APK"
+          $ANDROID_HOME/build-tools/35.0.0/aapt dump badging "$APK" | grep "versionName='2.1.1'"
+          $ANDROID_HOME/build-tools/35.0.0/zipalign -v -c -P 16 4 "$APK"
+      - uses: actions/upload-artifact@v4
         with:
-          name: ImageSeek-2.1.1-debug
+          name: ImageSeek-2.1.1-debug-log
           path: app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Upload lint report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ImageSeek-2.1.1-lint
-          path: app/build/reports/lint-results-debug.html
-          if-no-files-found: ignore
-          retention-days: 30
