@@ -13,6 +13,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -37,12 +38,14 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -54,6 +57,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -83,7 +87,7 @@ private enum class Engine(val title: String, val shortTitle: String, val host: S
         val source = runCatching { URI(imageUrl) }.getOrNull()
         require(source != null && source.scheme?.lowercase() == "https" && !source.host.isNullOrBlank() && source.userInfo == null)
         val encoded = URLEncoder.encode(source.toString(), StandardCharsets.UTF_8.name())
-        return when (this) {
+        val result = when (this) {
             GOOGLE -> "https://lens.google.com/uploadbyurl?url=$encoded"
             BING -> "https://www.bing.com/images/search?view=detailv2&iss=sbi&FORM=SBIHMP&sbisrc=UrlPaste&q=imgurl:$encoded"
             YANDEX -> "https://yandex.com/images/search?rpt=imageview&url=$encoded"
@@ -92,6 +96,8 @@ private enum class Engine(val title: String, val shortTitle: String, val host: S
             SAUCENAO -> "https://saucenao.com/search.php?db=999&url=$encoded"
             IQDB -> "https://iqdb.org/?url=$encoded"
         }
+        DebugLog.i("ENGINE", "engine=$name imageUrl=$imageUrl searchUrl=$result")
+        return result
     }
 }
 
@@ -144,6 +150,7 @@ private fun ImageSeekTheme(content: @Composable () -> Unit) {
 private fun ImageSeekApp(incomingImage: IncomingImage?) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val capturedDebugSources = remember { mutableSetOf<String>() }
     var selectedUri by remember { mutableStateOf<Uri?>(incomingImage?.uri) }
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
     var quality by remember { mutableStateOf(Quality.BALANCED) }
@@ -158,95 +165,244 @@ private fun ImageSeekApp(incomingImage: IncomingImage?) {
 
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         DebugLog.i("PICKER", "photo=$uri")
-        if (uri != null) { uploadToken++; selectedUri = uri; hostedUrl = null; error = null }
+        if (uri != null) {
+            uploadToken++
+            selectedUri = uri
+            hostedUrl = null
+            error = null
+        }
     }
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         DebugLog.i("PICKER", "file=$uri")
-        if (uri != null) { uploadToken++; selectedUri = uri; hostedUrl = null; error = null }
+        if (uri != null) {
+            uploadToken++
+            selectedUri = uri
+            hostedUrl = null
+            error = null
+        }
     }
 
-    LaunchedEffect(incomingImage?.token) { incomingImage?.let { selectedUri = it.uri } }
+    LaunchedEffect(incomingImage?.token) {
+        incomingImage?.let {
+            DebugLog.i("IMAGE", "incoming token=${it.token} uri=${it.uri}")
+            uploadToken++
+            selectedUri = it.uri
+            hostedUrl = null
+            error = null
+        }
+    }
 
     LaunchedEffect(selectedUri, quality) {
         val uri = selectedUri ?: return@LaunchedEffect
+        val shouldCaptureOriginal = capturedDebugSources.add(uri.toString())
         decoding = true
+        error = null
         try {
             bitmap = withContext(Dispatchers.IO) {
                 DebugLog.uriMetadata(context, uri, "selected")
-                DebugLog.captureSource(context, uri, "selected")
+                if (shouldCaptureOriginal) {
+                    DebugLog.captureSource(context, uri, "selected")
+                } else {
+                    DebugLog.d("CAPTURE", "skip duplicate source capture uri=$uri quality=${quality.name}")
+                }
                 decodeImage(context, uri, quality.maxDimension)
             }
+        } catch (cancelled: CancellationException) {
+            DebugLog.i("DECODE", "cancelled uri=$uri quality=${quality.name}")
+            throw cancelled
         } catch (t: Throwable) {
-            DebugLog.exception("DECODE", t)
-            error = t.message
-        } finally { decoding = false }
+            DebugLog.exception("DECODE", t, "uri=$uri quality=${quality.name}")
+            error = t.message ?: "无法读取图片"
+        } finally {
+            decoding = false
+        }
     }
 
     if (hostedUrl != null) {
-        ResultsScreen(hostedUrl!!, engine, { engine = it }, { hostedUrl = null })
+        ResultsScreen(
+            hostedUrl = hostedUrl!!,
+            engine = engine,
+            onEngineChanged = { newEngine ->
+                DebugLog.i("ENGINE", "switch result engine ${engine.name} -> ${newEngine.name}")
+                engine = newEngine
+            },
+            onBack = {
+                DebugLog.i("BACK", "leave results -> selection hostedUrl=$hostedUrl engine=${engine.name}")
+                hostedUrl = null
+            }
+        )
         return
     }
 
-    SelectionScreen(bitmap, quality, engine, decoding, uploading, error,
-        { quality = it }, { engine = it },
-        { photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-        { filePicker.launch(arrayOf("image/*")) },
-        {
-            val b = bitmap ?: return@SelectionScreen
+    SelectionScreen(
+        bitmap = bitmap,
+        quality = quality,
+        engine = engine,
+        decoding = decoding,
+        uploading = uploading,
+        error = error,
+        onQualityChanged = {
+            if (!uploading) {
+                DebugLog.i("QUALITY", "${quality.name} -> ${it.name}")
+                quality = it
+            }
+        },
+        onEngineChanged = {
+            DebugLog.i("ENGINE", "selection ${engine.name} -> ${it.name}")
+            engine = it
+        },
+        onPickPhoto = { photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+        onPickFile = { filePicker.launch(arrayOf("image/*")) },
+        onSearch = {
+            val currentBitmap = bitmap ?: return@SelectionScreen
             val token = ++uploadToken
+            val currentQuality = quality
+            error = null
             uploading = true
+            DebugLog.i("SEARCH", "start token=$token engine=${engine.name} quality=${currentQuality.name}")
             scope.launch {
                 try {
-                    val url = uploadTemporaryWithFallback(context, b, quality.jpegQuality)
+                    val url = uploadTemporaryWithFallback(context, currentBitmap, currentQuality.jpegQuality)
+                    DebugLog.i("SEARCH", "upload success token=$token activeToken=$uploadToken url=$url")
                     if (token == uploadToken) hostedUrl = url
+                } catch (cancelled: CancellationException) {
+                    DebugLog.i("SEARCH", "cancelled token=$token")
+                    throw cancelled
                 } catch (t: Throwable) {
-                    DebugLog.exception("SEARCH", t)
-                    error = t.message
-                } finally { uploading = false }
+                    DebugLog.exception("SEARCH", t, "token=$token engine=${engine.name}")
+                    if (token == uploadToken) error = t.message ?: "上传失败"
+                } finally {
+                    if (token == uploadToken) uploading = false
+                }
             }
-        })
+        }
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SelectionScreen(bitmap: Bitmap?, quality: Quality, engine: Engine, decoding: Boolean, uploading: Boolean, error: String?, onQualityChanged: (Quality)->Unit, onEngineChanged:(Engine)->Unit, onPickPhoto:()->Unit, onPickFile:()->Unit, onSearch:()->Unit) {
-    Scaffold(contentWindowInsets = WindowInsets.safeDrawing, topBar = { TopAppBar(title = { Text("图搜 · ImageSeek DEBUG") }) }) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+private fun SelectionScreen(
+    bitmap: Bitmap?,
+    quality: Quality,
+    engine: Engine,
+    decoding: Boolean,
+    uploading: Boolean,
+    error: String?,
+    onQualityChanged: (Quality) -> Unit,
+    onEngineChanged: (Engine) -> Unit,
+    onPickPhoto: () -> Unit,
+    onPickFile: () -> Unit,
+    onSearch: () -> Unit
+) {
+    Scaffold(
+        contentWindowInsets = WindowInsets.safeDrawing,
+        topBar = { TopAppBar(title = { Text("图搜 · ImageSeek DEBUG") }) }
+    ) { padding ->
+        Column(
+            Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
             Text("详细日志已开启")
             Text("日志: ${DebugLog.location()}")
             Text("图片处理状态: ${if (decoding) "读取中" else "空闲"}")
-            Button(onClick = onPickPhoto) { Text("选择照片") }
-            OutlinedButton(onClick = onPickFile) { Text("文件") }
-            LazyRow { items(Quality.entries) { FilterChip(selected = it == quality, onClick = { onQualityChanged(it) }, label = { Text(it.title) }) } }
-            LazyRow { items(Engine.entries) { FilterChip(selected = it == engine, onClick = { onEngineChanged(it) }, label = { Text(it.shortTitle) }) } }
-            error?.let { Text(it) }
-            Button(onClick = onSearch, enabled = bitmap != null && !uploading) { Text(if (uploading) "上传中" else "搜索") }
+            Button(onClick = onPickPhoto, enabled = !uploading) { Text("选择照片") }
+            OutlinedButton(onClick = onPickFile, enabled = !uploading) { Text("文件") }
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(Quality.entries) {
+                    FilterChip(
+                        selected = it == quality,
+                        onClick = { onQualityChanged(it) },
+                        enabled = !uploading,
+                        label = { Text("${it.title} · ${it.detail}") }
+                    )
+                }
+            }
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(Engine.entries) {
+                    FilterChip(selected = it == engine, onClick = { onEngineChanged(it) }, label = { Text(it.shortTitle) })
+                }
+            }
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            Button(onClick = onSearch, enabled = bitmap != null && !decoding && !uploading) {
+                Text(if (uploading) "上传中" else "搜索 · ${engine.shortTitle}")
+            }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ResultsScreen(hostedUrl:String, engine:Engine, onEngineChanged:(Engine)->Unit, onBack:()->Unit) {
+private fun ResultsScreen(
+    hostedUrl: String,
+    engine: Engine,
+    onEngineChanged: (Engine) -> Unit,
+    onBack: () -> Unit
+) {
     val url = remember(hostedUrl, engine) { engine.searchUrl(hostedUrl) }
     var webView by remember { mutableStateOf<WebView?>(null) }
-    LaunchedEffect(engine) { DebugLog.i("WEBVIEW", "engine=${engine.name} hostedUrl=$hostedUrl searchUrl=$url") }
-    Scaffold { padding ->
-        AndroidView(
-            factory = { ctx ->
-                secureWebView(ctx).also {
-                    webView = it
-                    DebugLog.i("WEBVIEW", "loadUrl=$url")
-                    it.loadUrl(url)
+
+    BackHandler(enabled = true) {
+        DebugLog.i(
+            "BACK",
+            "systemBack results currentUrl=${webView?.url} canGoBack=${webView?.canGoBack()} action=return_to_selection"
+        )
+        onBack()
+    }
+
+    LaunchedEffect(engine, url) {
+        DebugLog.i("WEBVIEW", "engine=${engine.name} hostedUrl=$hostedUrl searchUrl=$url")
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            webView?.let { view ->
+                DebugLog.i("WEBVIEW", "dispose url=${view.url} canGoBack=${view.canGoBack()} historySize=${view.copyBackForwardList().size}")
+                view.stopLoading()
+                view.destroy()
+            }
+            webView = null
+        }
+    }
+
+    Scaffold(
+        contentWindowInsets = WindowInsets.safeDrawing,
+        topBar = {
+            TopAppBar(
+                title = { Text(engine.title) },
+                navigationIcon = {
+                    TextButton(onClick = {
+                        DebugLog.i("BACK", "toolbarBack results currentUrl=${webView?.url} action=return_to_selection")
+                        onBack()
+                    }) { Text("返回") }
                 }
-            },
-            modifier = Modifier.fillMaxSize().padding(padding),
-            update = { view ->
-                if (view.url != url) {
-                    DebugLog.i("WEBVIEW", "switch loadUrl=$url old=${view.url}")
-                    view.loadUrl(url)
+            )
+        }
+    ) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                items(Engine.entries) {
+                    FilterChip(selected = it == engine, onClick = { onEngineChanged(it) }, label = { Text(it.shortTitle) })
                 }
             }
-        )
+            AndroidView(
+                factory = { ctx ->
+                    secureWebView(ctx).also {
+                        webView = it
+                        DebugLog.i("WEBVIEW", "loadUrl=$url")
+                        it.loadUrl(url)
+                    }
+                },
+                modifier = Modifier.fillMaxSize(),
+                update = { view ->
+                    webView = view
+                    if (view.url != url) {
+                        DebugLog.i("WEBVIEW", "switch engine loadUrl=$url old=${view.url}")
+                        view.stopLoading()
+                        view.loadUrl(url)
+                    }
+                }
+            )
+        }
     }
 }
 
@@ -256,22 +412,37 @@ private fun secureWebView(context: Context): WebView = WebView(context).apply {
     settings.allowFileAccess = false
     settings.allowContentAccess = false
     DebugLog.i("WEBVIEW", "created userAgent=${settings.userAgentString} js=${settings.javaScriptEnabled} dom=${settings.domStorageEnabled}")
-    webViewClient = object: WebViewClient() {
+    webViewClient = object : WebViewClient() {
         override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-            DebugLog.i("WEBVIEW", "navigate url=${request?.url} method=${request?.method} headers=${request?.requestHeaders} mainFrame=${request?.isForMainFrame}")
-            return request?.url?.scheme?.lowercase() != "https"
+            val blocked = request?.url?.scheme?.lowercase() != "https"
+            DebugLog.i(
+                "WEBVIEW_NAV",
+                "url=${request?.url} method=${request?.method} headers=${request?.requestHeaders} mainFrame=${request?.isForMainFrame} redirect=${request?.isRedirect} gesture=${request?.hasGesture()} blocked=$blocked"
+            )
+            return blocked
         }
 
         override fun onPageFinished(view: WebView?, url: String?) {
-            DebugLog.i("WEBVIEW", "finished=$url title=${view?.title} progress=${view?.progress}")
+            DebugLog.i(
+                "WEBVIEW_PAGE",
+                "finished=$url title=${view?.title} progress=${view?.progress} canGoBack=${view?.canGoBack()} historySize=${view?.copyBackForwardList()?.size}"
+            )
         }
 
         override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
-            DebugLog.e("WEBVIEW", "errorCode=${error?.errorCode} description=${error?.description} url=${request?.url} headers=${request?.requestHeaders}")
+            val message = "mainFrame=${request?.isForMainFrame} errorCode=${error?.errorCode} description=${error?.description} url=${request?.url} headers=${request?.requestHeaders}"
+            if (request?.isForMainFrame == true) {
+                DebugLog.e("WEBVIEW_ERROR", message)
+            } else {
+                DebugLog.w("WEBVIEW_SUBRESOURCE", message)
+            }
         }
 
         override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
-            DebugLog.e("WEBVIEW", "gone didCrash=${detail?.didCrash()} priority=${detail?.rendererPriorityAtExit()} url=${view?.url}")
+            DebugLog.e(
+                "WEBVIEW_RENDERER",
+                "gone didCrash=${detail?.didCrash()} priority=${detail?.rendererPriorityAtExit()} url=${view?.url}"
+            )
             view?.destroy()
             return true
         }
@@ -285,6 +456,7 @@ private fun decodeImage(context: Context, uri: Uri, maxDimension: Int): Bitmap {
     return ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
         val width = info.size.width
         val height = info.size.height
+        require(width > 0 && height > 0) { "图片尺寸无效" }
         DebugLog.i("DECODE", "header width=$width height=$height mime=${info.mimeType} colorSpace=${info.colorSpace}")
         val longest = maxOf(width, height)
         if (longest > maxDimension) {
@@ -295,6 +467,9 @@ private fun decodeImage(context: Context, uri: Uri, maxDimension: Int): Bitmap {
             decoder.setTargetSize(targetWidth, targetHeight)
         }
     }.also {
-        DebugLog.i("DECODE", "complete result=${it.width}x${it.height} bytes=${it.byteCount} elapsedMs=${(System.nanoTime() - started) / 1_000_000L}")
+        DebugLog.i(
+            "DECODE",
+            "complete result=${it.width}x${it.height} config=${it.config} bytes=${it.byteCount} allocationBytes=${it.allocationByteCount} elapsedMs=${(System.nanoTime() - started) / 1_000_000L}"
+        )
     }
 }
