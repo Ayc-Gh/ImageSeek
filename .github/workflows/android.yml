@@ -58,8 +58,8 @@ jobs:
           echo "$BADGING" | grep -m1 '^package:'
           echo "$BADGING" | grep -m1 '^targetSdkVersion:'
           echo "$BADGING" | grep -q "package: name='com.akslabs.multiimagesearch'"
-          echo "$BADGING" | grep -q "versionCode='210'"
-          echo "$BADGING" | grep -q "versionName='2.1.0'"
+          echo "$BADGING" | grep -q "versionCode='211'"
+          echo "$BADGING" | grep -q "versionName='2.1.1'"
           echo "$BADGING" | grep -q "targetSdkVersion:'36'"
 
           echo "--- Signature ---"
@@ -105,7 +105,7 @@ jobs:
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: ImageSeek-2.1.0-debug
+          name: ImageSeek-2.1.1-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
@@ -114,7 +114,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ImageSeek-2.1.0-lint
+          name: ImageSeek-2.1.1-lint
           path: app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
           retention-days: 30
