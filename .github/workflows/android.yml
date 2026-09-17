@@ -66,10 +66,10 @@ jobs:
           "$BUILD_TOOLS/apksigner" verify --verbose "$APK"
 
           echo "--- Manifest permissions ---"
-          PERMS=$("$BUILD_TOOLS/aapt" dump permissions "$APK" | grep "uses-permission:" || true)
+          PERMS=$("$BUILD_TOOLS/aapt" dump permissions "$APK" | grep "uses-permission:" | sort -u || true)
           echo "$PERMS"
           echo "$PERMS" | grep -q "android.permission.INTERNET"
-          if echo "$PERMS" | grep -Ev 'android\.permission\.INTERNET|^$'; then
+          if echo "$PERMS" | grep -Ev 'android\.permission\.INTERNET|com\.akslabs\.multiimagesearch\.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION|^$'; then
             echo "Unexpected permission found" >&2
             exit 1
           fi
