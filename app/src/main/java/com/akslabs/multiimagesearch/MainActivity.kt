@@ -16,6 +16,7 @@ import android.webkit.SafeBrowsingResponse
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebStorage
 import android.webkit.WebView
@@ -121,12 +122,13 @@ private enum class Engine(val title: String, val shortTitle: String, val host: S
     IQDB("IQDB", "IQDB", "iqdb.org");
 
     fun searchUrl(imageUrl: String): String {
+        DebugLog.i("ENGINE", "build search URL engine=$name title=$title imageUrl=$imageUrl")
         val source = runCatching { URI(imageUrl) }.getOrNull()
         require(source != null && source.scheme?.lowercase() == "https" && !source.host.isNullOrBlank() && source.userInfo == null) {
             "Only valid HTTPS image URLs are supported"
         }
         val encoded = URLEncoder.encode(source.toString(), StandardCharsets.UTF_8.name())
-        return when (this) {
+        val result = when (this) {
             GOOGLE -> "https://lens.google.com/uploadbyurl?url=$encoded"
             BING -> "https://www.bing.com/images/search?view=detailv2&iss=sbi&FORM=SBIHMP&sbisrc=UrlPaste&q=imgurl:$encoded"
             YANDEX -> "https://yandex.com/images/search?rpt=imageview&url=$encoded"
@@ -135,6 +137,8 @@ private enum class Engine(val title: String, val shortTitle: String, val host: S
             SAUCENAO -> "https://saucenao.com/search.php?db=999&url=$encoded"
             IQDB -> "https://iqdb.org/?url=$encoded"
         }
+        DebugLog.i("ENGINE", "search URL engine=$name result=$result")
+        return result
     }
 }
 
@@ -143,10 +147,17 @@ class MainActivity : ComponentActivity() {
     private var incomingToken = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        DebugLog.start(this)
+        DebugLog.i("ACTIVITY", "onCreate activity=$this savedInstanceState=$savedInstanceState")
+        DebugLog.intent(intent, "onCreate")
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        WebView.setWebContentsDebuggingEnabled(false)
-        incomingImage.value = extractImageUri(intent)?.let { IncomingImage(it, ++incomingToken) }
+        WebView.setWebContentsDebuggingEnabled(true)
+        DebugLog.i("WEBVIEW", "WebView remote debugging enabled=true package=${WebView.getCurrentWebViewPackage()}")
+        incomingImage.value = extractImageUri(intent)?.let { uri ->
+            DebugLog.i("IMAGE", "initial incoming image uri=$uri")
+            IncomingImage(uri, ++incomingToken)
+        }
         setContent {
             ImageSeekTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -156,21 +167,57 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        DebugLog.i("ACTIVITY", "onStart activity=$this")
+    }
+
+    override fun onResume() {
+        super.onResume()
+        DebugLog.i("ACTIVITY", "onResume activity=$this")
+    }
+
+    override fun onPause() {
+        DebugLog.i("ACTIVITY", "onPause activity=$this")
+        super.onPause()
+    }
+
+    override fun onStop() {
+        DebugLog.i("ACTIVITY", "onStop activity=$this")
+        super.onStop()
+    }
+
+    override fun onDestroy() {
+        DebugLog.i("ACTIVITY", "onDestroy activity=$this finishing=$isFinishing changingConfigurations=$isChangingConfigurations")
+        super.onDestroy()
+    }
+
     override fun onNewIntent(intent: Intent) {
+        DebugLog.i("ACTIVITY", "onNewIntent activity=$this")
+        DebugLog.intent(intent, "onNewIntent")
         super.onNewIntent(intent)
         setIntent(intent)
-        extractImageUri(intent)?.let { incomingImage.value = IncomingImage(it, ++incomingToken) }
+        extractImageUri(intent)?.let { uri ->
+            DebugLog.i("IMAGE", "new incoming image uri=$uri")
+            incomingImage.value = IncomingImage(uri, ++incomingToken)
+        }
     }
 
     private fun extractImageUri(intent: Intent): Uri? {
-        if (intent.action != Intent.ACTION_SEND || intent.type?.startsWith("image/") != true) return null
+        DebugLog.d("INTENT", "extractImageUri action=${intent.action} type=${intent.type}")
+        if (intent.action != Intent.ACTION_SEND || intent.type?.startsWith("image/") != true) {
+            DebugLog.d("INTENT", "extractImageUri rejected action/type")
+            return null
+        }
         val stream = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
         } else {
             @Suppress("DEPRECATION")
             intent.getParcelableExtra(Intent.EXTRA_STREAM)
         }
-        return stream ?: intent.clipData?.getItemAt(0)?.uri
+        val result = stream ?: intent.clipData?.getItemAt(0)?.uri
+        DebugLog.i("INTENT", "extractImageUri extraStream=$stream clipFirst=${intent.clipData?.getItemAt(0)?.uri} result=$result")
+        return result
     }
 }
 
@@ -200,7 +247,12 @@ private fun ImageSeekApp(incomingImage: IncomingImage?) {
     var hostedUrl by remember { mutableStateOf<String?>(null) }
     var uploadToken by remember { mutableLongStateOf(0L) }
 
+    LaunchedEffect(Unit) {
+        DebugLog.i("UI", "ImageSeekApp composed initialIncoming=${incomingImage?.uri} log=${DebugLog.location()}")
+    }
+
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        DebugLog.i("PICKER", "photo picker result uri=$uri")
         if (uri != null) {
             uploadToken++
             selectedUri = uri
@@ -209,6 +261,7 @@ private fun ImageSeekApp(incomingImage: IncomingImage?) {
         }
     }
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        DebugLog.i("PICKER", "open document result uri=$uri")
         if (uri != null) {
             uploadToken++
             selectedUri = uri
@@ -219,6 +272,7 @@ private fun ImageSeekApp(incomingImage: IncomingImage?) {
 
     LaunchedEffect(incomingImage?.token) {
         incomingImage?.let {
+            DebugLog.i("IMAGE", "LaunchedEffect incoming token=${it.token} uri=${it.uri}")
             uploadToken++
             selectedUri = it.uri
             hostedUrl = null
@@ -231,20 +285,37 @@ private fun ImageSeekApp(incomingImage: IncomingImage?) {
         hostedUrl = null
         error = null
         val uri = selectedUri ?: return@LaunchedEffect
+        DebugLog.i("IMAGE", "selected uri=$uri quality=${quality.name} maxDimension=${quality.maxDimension} jpegQuality=${quality.jpegQuality}")
         decoding = true
         try {
-            bitmap = withContext(Dispatchers.IO) { decodeImage(context, uri, quality.maxDimension) }
+            val decoded = withContext(Dispatchers.IO) {
+                DebugLog.uriMetadata(context, uri, "selected-image")
+                DebugLog.captureSource(context, uri, "selected-image")
+                decodeImage(context, uri, quality.maxDimension)
+            }
+            bitmap = decoded
+            DebugLog.i("IMAGE", "decoded result=${decoded.width}x${decoded.height} config=${decoded.config} byteCount=${decoded.byteCount} allocationByteCount=${decoded.allocationByteCount}")
         } catch (cancelled: CancellationException) {
+            DebugLog.w("IMAGE", "decode cancelled uri=$uri")
             throw cancelled
         } catch (t: Throwable) {
+            DebugLog.exception("IMAGE", t, "decode failed uri=$uri quality=${quality.name}")
             error = t.message ?: "无法读取图片"
         } finally {
             decoding = false
+            DebugLog.d("IMAGE", "decode finished uri=$uri decoding=false")
         }
     }
 
     if (hostedUrl != null) {
-        ResultsScreen(hostedUrl!!, engine, { engine = it }, { hostedUrl = null })
+        DebugLog.i("UI", "show results hostedUrl=$hostedUrl engine=${engine.name}")
+        ResultsScreen(hostedUrl!!, engine, {
+            DebugLog.i("ENGINE", "results switch ${engine.name} -> ${it.name} hostedUrl=$hostedUrl")
+            engine = it
+        }, {
+            DebugLog.i("UI", "results back hostedUrl=$hostedUrl")
+            hostedUrl = null
+        })
         return
     }
 
@@ -255,26 +326,45 @@ private fun ImageSeekApp(incomingImage: IncomingImage?) {
         decoding = decoding,
         uploading = uploading,
         error = error,
-        onQualityChanged = { if (!uploading) quality = it },
-        onEngineChanged = { engine = it },
-        onPickPhoto = { photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-        onPickFile = { filePicker.launch(arrayOf("image/*")) },
+        onQualityChanged = {
+            if (!uploading) {
+                DebugLog.i("QUALITY", "change ${quality.name} -> ${it.name}")
+                quality = it
+            }
+        },
+        onEngineChanged = {
+            DebugLog.i("ENGINE", "selection switch ${engine.name} -> ${it.name}")
+            engine = it
+        },
+        onPickPhoto = {
+            DebugLog.i("PICKER", "launch PickVisualMedia ImageOnly")
+            photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+        },
+        onPickFile = {
+            DebugLog.i("PICKER", "launch OpenDocument image/*")
+            filePicker.launch(arrayOf("image/*"))
+        },
         onSearch = {
             val currentBitmap = bitmap ?: return@SelectionScreen
             val token = ++uploadToken
             val currentQuality = quality
+            DebugLog.i("SEARCH", "start token=$token engine=${engine.name} quality=${currentQuality.name} bitmap=${currentBitmap.width}x${currentBitmap.height}")
             scope.launch {
                 error = null
                 uploading = true
                 try {
-                    val result = uploadTemporaryWithFallback(currentBitmap, currentQuality.jpegQuality)
+                    val result = uploadTemporaryWithFallback(context, currentBitmap, currentQuality.jpegQuality)
+                    DebugLog.i("SEARCH", "upload completed token=$token result=$result activeToken=$uploadToken")
                     if (token == uploadToken) hostedUrl = result
                 } catch (cancelled: CancellationException) {
+                    DebugLog.w("SEARCH", "search cancelled token=$token")
                     throw cancelled
                 } catch (t: Throwable) {
+                    DebugLog.exception("SEARCH", t, "search failed token=$token engine=${engine.name}")
                     if (token == uploadToken) error = t.message ?: "上传失败"
                 } finally {
                     if (token == uploadToken) uploading = false
+                    DebugLog.i("SEARCH", "finish token=$token activeToken=$uploadToken uploading=$uploading")
                 }
             }
         }
@@ -304,10 +394,10 @@ private fun SelectionScreen(
                 title = {
                     Column {
                         Text("图搜 · ImageSeek", style = MaterialTheme.typography.titleLarge)
-                        Text("Android 16 / 多引擎反向搜图", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Android 16 / 多引擎反向搜图 · DEBUG LOG", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 },
-                actions = { TextButton(onClick = { diagnostics = true }) { Text("诊断") } },
+                actions = { TextButton(onClick = { DebugLog.i("UI", "open diagnostics"); diagnostics = true }) { Text("诊断") } },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
             )
         }
@@ -319,7 +409,7 @@ private fun SelectionScreen(
         ) {
             Column(modifier = Modifier.fillMaxWidth().widthIn(max = 760.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("一张图，七个引擎。", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-                Text("选择或分享图片，只上传一次，再快速切换 Google、Bing、Yandex、百度、TinEye、SauceNAO 与 IQDB。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("详细 Debug 日志已启用：运行信息、图片副本、HTTP 请求/响应、完整 URL、WebView 导航与异常都会写入日志。", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 
             Card(modifier = Modifier.fillMaxWidth().widthIn(max = 760.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)) {
@@ -367,9 +457,9 @@ private fun SelectionScreen(
 
             Card(modifier = Modifier.fillMaxWidth().widthIn(max = 760.dp)) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("上传与隐私", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Text("图片会按 ${quality.maxDimension}px 上限采样并重新编码为 JPEG，原始 EXIF/GPS 不会随原文件上传；优先使用 Litterbox 1 小时临时存储，服务异常时自动切换到约 3 小时过期的 Uguu 临时存储。", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text("不要搜索身份证件、医疗资料、私密照片或其他敏感内容。", fontWeight = FontWeight.SemiBold)
+                    Text("Debug 日志", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text("日志位置：${DebugLog.location()}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("此 Debug 版本按你的要求不做隐私脱敏，并会在 Download/ImageSeek/logs/assets 保存所选原图与上传 JPEG 的调试副本。", fontWeight = FontWeight.SemiBold)
                 }
             }
 
@@ -391,7 +481,7 @@ private fun SelectionScreen(
             Spacer(Modifier.height(12.dp))
         }
     }
-    if (diagnostics) DiagnosticsDialog(onDismiss = { diagnostics = false })
+    if (diagnostics) DiagnosticsDialog(onDismiss = { DebugLog.i("UI", "close diagnostics"); diagnostics = false })
 }
 
 @Composable
@@ -414,26 +504,37 @@ private fun ResultsScreen(hostedUrl: String, engine: Engine, onEngineChanged: (E
     var pageError by remember { mutableStateOf<String?>(null) }
     var generation by remember { mutableIntStateOf(0) }
 
+    LaunchedEffect(searchUrl) {
+        DebugLog.i("WEBVIEW", "ResultsScreen engine=${engine.name} hostedUrl=$hostedUrl searchUrl=$searchUrl generation=$generation")
+    }
+
     val navigateBack: () -> Unit = {
         val view = webView
+        DebugLog.i("WEBVIEW", "navigateBack currentUrl=${view?.url} canGoBack=${view?.canGoBack()}")
         if (view?.canGoBack() == true) view.goBack() else onBack()
     }
 
     PredictiveBackHandler(enabled = true) { progress ->
         try {
-            progress.collect { }
+            progress.collect { event -> DebugLog.d("BACK", "predictive progress=$event") }
+            DebugLog.i("BACK", "predictive back committed")
             navigateBack()
         } catch (_: CancellationException) {
+            DebugLog.i("BACK", "predictive back cancelled")
         }
     }
 
     DisposableEffect(Unit) {
+        DebugLog.i("WEBVIEW", "WebView screen effect created")
         onDispose {
-            webView?.stopLoading()
-            webView?.destroy()
+            val view = webView
+            DebugLog.i("WEBVIEW", "dispose url=${view?.url} originalUrl=${view?.originalUrl} title=${view?.title} progress=${view?.progress} cookies=${view?.url?.let { CookieManager.getInstance().getCookie(it) }}")
+            view?.stopLoading()
+            view?.destroy()
             webView = null
-            CookieManager.getInstance().removeAllCookies(null)
+            CookieManager.getInstance().removeAllCookies { removed -> DebugLog.i("WEBVIEW", "removeAllCookies callback=$removed") }
             WebStorage.getInstance().deleteAllData()
+            DebugLog.i("WEBVIEW", "WebStorage deleteAllData requested")
         }
     }
 
@@ -443,21 +544,21 @@ private fun ResultsScreen(hostedUrl: String, engine: Engine, onEngineChanged: (E
             TopAppBar(
                 title = { Text(engine.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = { TextButton(onClick = navigateBack) { Text("返回") } },
-                actions = { TextButton(onClick = { openExternal(context, currentUrl) }) { Text("浏览器") } }
+                actions = { TextButton(onClick = { DebugLog.i("WEBVIEW", "open external currentUrl=$currentUrl"); openExternal(context, currentUrl) }) { Text("浏览器") } }
             )
         }
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
             LazyRow(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(Engine.entries) { item ->
-                    FilterChip(selected = item == engine, onClick = { onEngineChanged(item) }, label = { Text(item.shortTitle) })
+                    FilterChip(selected = item == engine, onClick = { DebugLog.i("ENGINE", "results chip click current=${engine.name} new=${item.name}"); onEngineChanged(item) }, label = { Text(item.shortTitle) })
                 }
             }
             if (pageError != null) {
                 Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
                     Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(pageError!!, modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onErrorContainer)
-                        TextButton(onClick = { pageError = null; generation++ }) { Text("重试") }
+                        TextButton(onClick = { DebugLog.i("WEBVIEW", "retry page error=$pageError"); pageError = null; generation++ }) { Text("重试") }
                     }
                 }
             }
@@ -465,18 +566,24 @@ private fun ResultsScreen(hostedUrl: String, engine: Engine, onEngineChanged: (E
                 AndroidView(
                     modifier = Modifier.fillMaxSize(),
                     factory = { ctx ->
+                        DebugLog.i("WEBVIEW", "create WebView generation=$generation searchUrl=$searchUrl")
                         secureWebView(ctx, { currentUrl = it }, { pageError = it }, {
                             webView = null
                             pageError = "网页渲染进程已退出，已准备重新加载"
                             generation++
                         }).also {
                             webView = it
+                            DebugLog.i("WEBVIEW", "initial loadUrl=$searchUrl")
                             it.loadUrl(searchUrl)
                         }
                     },
                     update = { view ->
                         webView = view
-                        if (view.url != searchUrl) view.loadUrl(searchUrl)
+                        DebugLog.d("WEBVIEW", "AndroidView update viewUrl=${view.url} desired=$searchUrl progress=${view.progress}")
+                        if (view.url != searchUrl) {
+                            DebugLog.i("WEBVIEW", "update loadUrl=$searchUrl from=${view.url}")
+                            view.loadUrl(searchUrl)
+                        }
                     }
                 )
             }
@@ -486,6 +593,7 @@ private fun ResultsScreen(hostedUrl: String, engine: Engine, onEngineChanged: (E
 
 private fun secureWebView(context: Context, onUrlChanged: (String) -> Unit, onError: (String) -> Unit, onRendererGone: () -> Unit): WebView =
     WebView(context).apply {
+        DebugLog.i("WEBVIEW", "secureWebView created=$this webViewPackage=${WebView.getCurrentWebViewPackage()}")
         settings.javaScriptEnabled = true
         settings.domStorageEnabled = true
         settings.allowFileAccess = false
@@ -496,28 +604,66 @@ private fun secureWebView(context: Context, onUrlChanged: (String) -> Unit, onEr
         settings.javaScriptCanOpenWindowsAutomatically = false
         settings.saveFormData = false
         settings.safeBrowsingEnabled = true
+        DebugLog.i(
+            "WEBVIEW_SETTINGS",
+            "userAgent=${settings.userAgentString} javaScript=${settings.javaScriptEnabled} domStorage=${settings.domStorageEnabled} allowFile=${settings.allowFileAccess} allowContent=${settings.allowContentAccess} mixedContent=${settings.mixedContentMode} cacheMode=${settings.cacheMode} multipleWindows=${settings.supportMultipleWindows()} jsOpenWindows=${settings.javaScriptCanOpenWindowsAutomatically} safeBrowsing=${settings.safeBrowsingEnabled}"
+        )
+        CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
-        webChromeClient = WebChromeClient()
+        webChromeClient = object : WebChromeClient() {
+            override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                DebugLog.d("WEBVIEW_PROGRESS", "progress=$newProgress url=${view?.url} title=${view?.title}")
+            }
+
+            override fun onReceivedTitle(view: WebView?, title: String?) {
+                DebugLog.i("WEBVIEW_TITLE", "title=$title url=${view?.url}")
+            }
+        }
         webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                val uri = request?.url ?: return true
-                return uri.scheme?.lowercase() != "https"
+                val uri = request?.url
+                val scheme = uri?.scheme?.lowercase()
+                val block = uri == null || scheme != "https"
+                DebugLog.i(
+                    "WEBVIEW_NAV",
+                    "shouldOverride url=$uri method=${request?.method} mainFrame=${request?.isForMainFrame} redirect=${request?.isRedirect} gesture=${request?.hasGesture()} headers=${request?.requestHeaders} block=$block"
+                )
+                return block
+            }
+
+            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                DebugLog.i("WEBVIEW_PAGE", "started url=$url originalUrl=${view?.originalUrl} favicon=${favicon?.width}x${favicon?.height} cookies=${url?.let { CookieManager.getInstance().getCookie(it) }}")
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
+                val cookie = url?.let { CookieManager.getInstance().getCookie(it) }
+                DebugLog.i("WEBVIEW_PAGE", "finished url=$url originalUrl=${view?.originalUrl} title=${view?.title} progress=${view?.progress} cookies=$cookie")
                 url?.let(onUrlChanged)
             }
 
             override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
+                DebugLog.e(
+                    "WEBVIEW_ERROR",
+                    "url=${request?.url} method=${request?.method} mainFrame=${request?.isForMainFrame} redirect=${request?.isRedirect} gesture=${request?.hasGesture()} headers=${request?.requestHeaders} errorCode=${error?.errorCode} description=${error?.description}"
+                )
                 if (request?.isForMainFrame == true) onError(error?.description?.toString() ?: "页面加载失败")
             }
 
+            override fun onReceivedHttpError(view: WebView?, request: WebResourceRequest?, errorResponse: WebResourceResponse?) {
+                DebugLog.e(
+                    "WEBVIEW_HTTP",
+                    "url=${request?.url} method=${request?.method} mainFrame=${request?.isForMainFrame} requestHeaders=${request?.requestHeaders} status=${errorResponse?.statusCode} reason=${errorResponse?.reasonPhrase} mime=${errorResponse?.mimeType} encoding=${errorResponse?.encoding} responseHeaders=${errorResponse?.responseHeaders}"
+                )
+            }
+
             override fun onSafeBrowsingHit(view: WebView?, request: WebResourceRequest?, threatType: Int, callback: SafeBrowsingResponse?) {
+                DebugLog.e("WEBVIEW_SAFE_BROWSING", "url=${request?.url} threatType=$threatType headers=${request?.requestHeaders}")
                 callback?.backToSafety(true)
                 onError("Android Safe Browsing 已拦截风险页面")
             }
 
             override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+                DebugLog.e("WEBVIEW_RENDERER", "render process gone didCrash=${detail?.didCrash()} rendererPriorityAtExit=${detail?.rendererPriorityAtExit()} url=${view?.url}")
                 view?.destroy()
                 onRendererGone()
                 return true
@@ -530,13 +676,16 @@ private fun DiagnosticsDialog(onDismiss: () -> Unit) {
     val context = LocalContext.current
     val info = remember { diagnosticsText(context) }
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
-        if (uri != null) runCatching { context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(info) } }
+        DebugLog.i("DIAGNOSTICS", "export result uri=$uri")
+        if (uri != null) runCatching {
+            context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(info) }
+        }.onFailure { DebugLog.exception("DIAGNOSTICS", it, "export failed uri=$uri") }
     }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("设备与运行诊断") },
         text = { Text(info, modifier = Modifier.verticalScroll(rememberScrollState())) },
-        confirmButton = { TextButton(onClick = { export.launch("imageseek-diagnostics.txt") }) { Text("导出 TXT") } },
+        confirmButton = { TextButton(onClick = { DebugLog.i("DIAGNOSTICS", "launch export"); export.launch("imageseek-diagnostics.txt") }) { Text("导出 TXT") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("关闭") } }
     )
 }
@@ -553,39 +702,65 @@ private fun diagnosticsText(context: Context): String {
     val pageSize = runCatching { Os.sysconf(OsConstants._SC_PAGESIZE) }.getOrDefault(-1L)
     val runtime = Runtime.getRuntime()
     val appInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-    return buildString {
+    val text = buildString {
         appendLine("ImageSeek ${appInfo.versionName} (${appInfo.longVersionCode})")
+        appendLine("Debug detailed logging: ${DebugLog.isEnabled()}")
+        appendLine("Debug log: ${DebugLog.location()}")
         appendLine("Android ${Build.VERSION.RELEASE} / API ${Build.VERSION.SDK_INT}")
         appendLine("Security patch: ${Build.VERSION.SECURITY_PATCH}")
         appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
+        appendLine("Build fingerprint: ${Build.FINGERPRINT}")
         appendLine("ABI: ${Build.SUPPORTED_ABIS.joinToString()}")
         appendLine("Page size: $pageSize bytes")
         appendLine("App max heap: ${runtime.maxMemory() / 1024 / 1024} MiB")
+        appendLine("App total heap: ${runtime.totalMemory() / 1024 / 1024} MiB")
+        appendLine("App free heap: ${runtime.freeMemory() / 1024 / 1024} MiB")
         appendLine("Display modes: $modes")
         appendLine("WebView: ${web?.packageName ?: "unknown"} ${web?.versionName ?: "unknown"}")
         appendLine("Target SDK: ${context.applicationInfo.targetSdkVersion}")
-        appendLine("Permissions: INTERNET only")
+        appendLine("Permissions: INTERNET + AndroidX internal dynamic receiver permission")
     }
+    DebugLog.i("DIAGNOSTICS", "generated\n$text")
+    return text
 }
 
 private fun decodeImage(context: Context, uri: Uri, maxDimension: Int): Bitmap {
     require(maxDimension in 512..4096)
+    val started = System.nanoTime()
+    DebugLog.i("DECODE", "start uri=$uri maxDimension=$maxDimension")
     val source = ImageDecoder.createSource(context.contentResolver, uri)
     return ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
         decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
         val width = info.size.width
         val height = info.size.height
+        DebugLog.i("DECODE", "header uri=$uri source=${width}x${height} mime=${info.mimeType} colorSpace=${info.colorSpace}")
         if (width <= 0 || height <= 0) throw IOException("图片尺寸无效")
         val longest = maxOf(width, height)
         if (longest > maxDimension) {
             val scale = maxDimension.toFloat() / longest
-            decoder.setTargetSize((width * scale).roundToInt().coerceAtLeast(1), (height * scale).roundToInt().coerceAtLeast(1))
+            val targetWidth = (width * scale).roundToInt().coerceAtLeast(1)
+            val targetHeight = (height * scale).roundToInt().coerceAtLeast(1)
+            DebugLog.i("DECODE", "resize source=${width}x${height} -> target=${targetWidth}x${targetHeight} scale=$scale")
+            decoder.setTargetSize(targetWidth, targetHeight)
+        } else {
+            DebugLog.i("DECODE", "no resize source=${width}x${height}")
         }
+    }.also { bitmap ->
+        DebugLog.i("DECODE", "complete uri=$uri result=${bitmap.width}x${bitmap.height} config=${bitmap.config} colorSpace=${bitmap.colorSpace} byteCount=${bitmap.byteCount} elapsedMs=${(System.nanoTime() - started) / 1_000_000L}")
     }
 }
 
 private fun openExternal(context: Context, url: String) {
-    val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return
-    if (uri.scheme?.lowercase() != "https") return
+    DebugLog.i("EXTERNAL", "openExternal requested url=$url")
+    val uri = runCatching { Uri.parse(url) }.getOrElse {
+        DebugLog.exception("EXTERNAL", it, "Uri.parse failed url=$url")
+        return
+    }
+    if (uri.scheme?.lowercase() != "https") {
+        DebugLog.w("EXTERNAL", "blocked non-https uri=$uri")
+        return
+    }
     runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, uri)) }
+        .onSuccess { DebugLog.i("EXTERNAL", "startActivity success uri=$uri") }
+        .onFailure { DebugLog.exception("EXTERNAL", it, "startActivity failed uri=$uri") }
 }
