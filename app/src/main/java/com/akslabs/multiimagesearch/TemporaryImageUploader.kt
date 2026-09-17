@@ -3,6 +3,7 @@ package com.akslabs.multiimagesearch
 import android.content.Context
 import android.graphics.Bitmap
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -62,7 +63,7 @@ internal suspend fun uploadTemporaryWithFallback(
             if (!isRetryableUploadFailure(error) || attempt == 3) break
             val delayMs = if (attempt == 1) 450L else 1_100L
             DebugLog.w("UPLOAD", "provider=Litterbox retryDelayMs=$delayMs nextAttempt=${attempt + 1}")
-            Thread.sleep(delayMs)
+            delay(delayMs)
         }
     }
 
@@ -165,7 +166,7 @@ private fun postMultipart(
     connection.instanceFollowRedirects = false
     connection.connectTimeout = 15_000
     connection.readTimeout = 30_000
-    connection.setRequestProperty("User-Agent", "ImageSeek/2.1.1-debug-log Android")
+    connection.setRequestProperty("User-Agent", "ImageSeek/2.1.2-debug-log Android")
     connection.setRequestProperty("Accept", accept)
     connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
     connection.setFixedLengthStreamingMode(contentLength)
