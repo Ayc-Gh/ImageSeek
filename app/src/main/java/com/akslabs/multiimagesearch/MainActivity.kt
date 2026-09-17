@@ -97,14 +97,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.ByteArrayOutputStream
 import java.io.IOException
-import java.net.HttpURLConnection
 import java.net.URI
-import java.net.URL
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
-import java.util.UUID
 import kotlin.math.roundToInt
 
 private data class IncomingImage(val uri: Uri, val token: Long)
@@ -271,7 +267,7 @@ private fun ImageSeekApp(incomingImage: IncomingImage?) {
                 error = null
                 uploading = true
                 try {
-                    val result = uploadTemporary(currentBitmap, currentQuality.jpegQuality)
+                    val result = uploadTemporaryWithFallback(currentBitmap, currentQuality.jpegQuality)
                     if (token == uploadToken) hostedUrl = result
                 } catch (cancelled: CancellationException) {
                     throw cancelled
@@ -372,7 +368,7 @@ private fun SelectionScreen(
             Card(modifier = Modifier.fillMaxWidth().widthIn(max = 760.dp)) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("上传与隐私", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Text("图片会按 ${quality.maxDimension}px 上限采样并重新编码为 JPEG，原始 EXIF/GPS 不会随原文件上传；随后上传到 Litterbox，并请求 1 小时后过期。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("图片会按 ${quality.maxDimension}px 上限采样并重新编码为 JPEG，原始 EXIF/GPS 不会随原文件上传；优先使用 Litterbox 1 小时临时存储，服务异常时自动切换到约 3 小时过期的 Uguu 临时存储。", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text("不要搜索身份证件、医疗资料、私密照片或其他敏感内容。", fontWeight = FontWeight.SemiBold)
                 }
             }
@@ -586,71 +582,6 @@ private fun decodeImage(context: Context, uri: Uri, maxDimension: Int): Bitmap {
             decoder.setTargetSize((width * scale).roundToInt().coerceAtLeast(1), (height * scale).roundToInt().coerceAtLeast(1))
         }
     }
-}
-
-private suspend fun uploadTemporary(bitmap: Bitmap, requestedQuality: Int): String = withContext(Dispatchers.IO) {
-    val jpeg = encodeJpeg(bitmap, requestedQuality)
-    val boundary = "----ImageSeek${UUID.randomUUID().toString().replace("-", "")}" 
-    val crlf = "\r\n"
-    val prefix = buildString {
-        append("--$boundary$crlf")
-        append("Content-Disposition: form-data; name=\"reqtype\"$crlf$crlf")
-        append("fileupload$crlf")
-        append("--$boundary$crlf")
-        append("Content-Disposition: form-data; name=\"time\"$crlf$crlf")
-        append("1h$crlf")
-        append("--$boundary$crlf")
-        append("Content-Disposition: form-data; name=\"fileToUpload\"; filename=\"image.jpg\"$crlf")
-        append("Content-Type: image/jpeg$crlf$crlf")
-    }.toByteArray(StandardCharsets.UTF_8)
-    val suffix = "$crlf--$boundary--$crlf".toByteArray(StandardCharsets.UTF_8)
-    val connection = URL("https://litterbox.catbox.moe/resources/internals/api.php").openConnection() as HttpURLConnection
-    connection.requestMethod = "POST"
-    connection.doOutput = true
-    connection.doInput = true
-    connection.useCaches = false
-    connection.instanceFollowRedirects = false
-    connection.connectTimeout = 30_000
-    connection.readTimeout = 30_000
-    connection.setRequestProperty("User-Agent", "ImageSeek/2.1 Android")
-    connection.setRequestProperty("Accept", "text/plain")
-    connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
-    connection.setFixedLengthStreamingMode(prefix.size.toLong() + jpeg.size.toLong() + suffix.size.toLong())
-    try {
-        connection.outputStream.buffered(64 * 1024).use { out ->
-            out.write(prefix); out.write(jpeg); out.write(suffix)
-        }
-        val code = connection.responseCode
-        val text = if (code in 200..299) connection.inputStream.bufferedReader().use { it.readText() }
-        else connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
-        if (code !in 200..299) throw IOException("临时图片上传失败：HTTP $code ${text.take(120)}")
-        validateTemporaryUrl(text.trim())
-    } finally {
-        connection.disconnect()
-    }
-}
-
-private fun encodeJpeg(bitmap: Bitmap, requestedQuality: Int): ByteArray {
-    val maxBytes = 12 * 1024 * 1024
-    var lastSize = 0
-    for (quality in listOf(requestedQuality, minOf(requestedQuality, 86), 80).distinct()) {
-        val out = ByteArrayOutputStream()
-        if (!bitmap.compress(Bitmap.CompressFormat.JPEG, quality, out)) throw IOException("无法编码图片")
-        val bytes = out.toByteArray()
-        if (bytes.isEmpty()) throw IOException("图片编码结果为空")
-        lastSize = bytes.size
-        if (bytes.size <= maxBytes) return bytes
-    }
-    throw IOException("压缩后的图片仍过大（${lastSize / 1024 / 1024} MiB），请使用均衡或快速质量")
-}
-
-private fun validateTemporaryUrl(value: String): String {
-    val uri = runCatching { URI(value) }.getOrNull() ?: throw IOException("临时图片服务返回了无效地址")
-    val pathOk = Regex("^/[A-Za-z0-9._-]+$").matches(uri.rawPath.orEmpty())
-    if (uri.scheme?.lowercase() != "https" || uri.host?.lowercase() != "litter.catbox.moe" || uri.userInfo != null || uri.port != -1 || uri.rawQuery != null || uri.rawFragment != null || !pathOk) {
-        throw IOException("临时图片服务返回了非预期地址")
-    }
-    return uri.toASCIIString()
 }
 
 private fun openExternal(context: Context, url: String) {
