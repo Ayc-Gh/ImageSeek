@@ -7,9 +7,14 @@ import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.webkit.CookieManager
 import android.webkit.RenderProcessGoneDetail
+import android.webkit.SafeBrowsingResponse
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
+import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
@@ -19,18 +24,35 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
@@ -40,6 +62,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
@@ -48,25 +71,38 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.IOException
 import java.net.URI
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import kotlin.math.roundToInt
 
+private const val UPLOAD_CACHE_TTL_MS = 55L * 60L * 1000L
+private const val UPLOAD_CACHE_MAX_ENTRIES = 8
+
 private data class IncomingImage(val uri: Uri, val token: Long)
+private data class UploadCacheEntry(val url: String, val expiresAtMillis: Long)
 
 private enum class Quality(val title: String, val detail: String, val maxDimension: Int, val jpegQuality: Int) {
     FAST("快速", "1600 px · 省流量", 1600, 82),
@@ -74,20 +110,26 @@ private enum class Quality(val title: String, val detail: String, val maxDimensi
     DETAIL("细节", "3200 px · 小目标/文字", 3200, 92)
 }
 
-private enum class Engine(val title: String, val shortTitle: String, val host: String) {
-    GOOGLE("Google Lens", "Google", "lens.google.com"),
-    BING("Bing Visual Search", "Bing", "www.bing.com"),
-    YANDEX("Yandex Images", "Yandex", "yandex.com"),
-    BAIDU("百度识图", "百度", "graph.baidu.com"),
-    TINEYE("TinEye", "TinEye", "tineye.com"),
-    SAUCENAO("SauceNAO", "SauceNAO", "saucenao.com"),
-    IQDB("IQDB", "IQDB", "iqdb.org");
+private enum class Engine(val title: String, val shortTitle: String) {
+    GOOGLE("Google Lens", "Google"),
+    BING("Bing Visual Search", "Bing"),
+    YANDEX("Yandex Images", "Yandex"),
+    BAIDU("百度识图", "百度"),
+    TINEYE("TinEye", "TinEye"),
+    SAUCENAO("SauceNAO", "SauceNAO"),
+    IQDB("IQDB", "IQDB");
 
     fun searchUrl(imageUrl: String): String {
         val source = runCatching { URI(imageUrl) }.getOrNull()
-        require(source != null && source.scheme?.lowercase() == "https" && !source.host.isNullOrBlank() && source.userInfo == null)
+        require(
+            source != null &&
+                source.scheme?.lowercase() == "https" &&
+                !source.host.isNullOrBlank() &&
+                source.userInfo == null
+        ) { "Only valid HTTPS image URLs are supported" }
+
         val encoded = URLEncoder.encode(source.toString(), StandardCharsets.UTF_8.name())
-        val result = when (this) {
+        return when (this) {
             GOOGLE -> "https://lens.google.com/uploadbyurl?url=$encoded"
             BING -> "https://www.bing.com/images/search?view=detailv2&iss=sbi&FORM=SBIHMP&sbisrc=UrlPaste&q=imgurl:$encoded"
             YANDEX -> "https://yandex.com/images/search?rpt=imageview&url=$encoded"
@@ -96,8 +138,6 @@ private enum class Engine(val title: String, val shortTitle: String, val host: S
             SAUCENAO -> "https://saucenao.com/search.php?db=999&url=$encoded"
             IQDB -> "https://iqdb.org/?url=$encoded"
         }
-        DebugLog.i("ENGINE", "engine=$name imageUrl=$imageUrl searchUrl=$result")
-        return result
     }
 }
 
@@ -106,34 +146,40 @@ class MainActivity : ComponentActivity() {
     private var incomingToken = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        DebugLog.start(this)
-        DebugLog.intent(intent, "onCreate")
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        WebView.setWebContentsDebuggingEnabled(true)
-        DebugLog.i("ACTIVITY", "onCreate webDebug=true")
+        WebView.setWebContentsDebuggingEnabled(false)
         incomingImage.value = extractImageUri(intent)?.let { IncomingImage(it, ++incomingToken) }
+
         setContent {
-            ImageSeekTheme { Surface(Modifier.fillMaxSize()) { ImageSeekApp(incomingImage.value) } }
+            ImageSeekTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    ImageSeekApp(incomingImage.value)
+                }
+            }
         }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        DebugLog.intent(intent, "onNewIntent")
         setIntent(intent)
-        extractImageUri(intent)?.let { incomingImage.value = IncomingImage(it, ++incomingToken) }
+        extractImageUri(intent)?.let {
+            incomingImage.value = IncomingImage(it, ++incomingToken)
+        }
     }
 
     private fun extractImageUri(intent: Intent): Uri? {
-        DebugLog.intent(intent, "extractImageUri")
         if (intent.action != Intent.ACTION_SEND || intent.type?.startsWith("image/") != true) return null
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        val stream = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
         } else {
             @Suppress("DEPRECATION")
             intent.getParcelableExtra(Intent.EXTRA_STREAM)
-        } ?: intent.clipData?.getItemAt(0)?.uri
+        }
+        return stream ?: intent.clipData?.getItemAt(0)?.uri
     }
 }
 
@@ -141,16 +187,20 @@ class MainActivity : ComponentActivity() {
 private fun ImageSeekTheme(content: @Composable () -> Unit) {
     val context = LocalContext.current
     val dark = isSystemInDarkTheme()
-    MaterialTheme(colorScheme = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+    val scheme = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-    } else if (dark) darkColorScheme() else lightColorScheme(), content = content)
+    } else {
+        if (dark) darkColorScheme() else lightColorScheme()
+    }
+    MaterialTheme(colorScheme = scheme, content = content)
 }
 
 @Composable
 private fun ImageSeekApp(incomingImage: IncomingImage?) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val capturedDebugSources = remember { mutableSetOf<String>() }
+    val uploadCache = remember { linkedMapOf<String, UploadCacheEntry>() }
+
     var selectedUri by remember { mutableStateOf<Uri?>(incomingImage?.uri) }
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
     var quality by remember { mutableStateOf(Quality.BALANCED) }
@@ -161,10 +211,7 @@ private fun ImageSeekApp(incomingImage: IncomingImage?) {
     var hostedUrl by remember { mutableStateOf<String?>(null) }
     var uploadToken by remember { mutableLongStateOf(0L) }
 
-    LaunchedEffect(Unit) { DebugLog.i("UI", "ImageSeek started log=${DebugLog.location()}") }
-
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        DebugLog.i("PICKER", "photo=$uri")
         if (uri != null) {
             uploadToken++
             selectedUri = uri
@@ -172,8 +219,8 @@ private fun ImageSeekApp(incomingImage: IncomingImage?) {
             error = null
         }
     }
+
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        DebugLog.i("PICKER", "file=$uri")
         if (uri != null) {
             uploadToken++
             selectedUri = uri
@@ -184,7 +231,6 @@ private fun ImageSeekApp(incomingImage: IncomingImage?) {
 
     LaunchedEffect(incomingImage?.token) {
         incomingImage?.let {
-            DebugLog.i("IMAGE", "incoming token=${it.token} uri=${it.uri}")
             uploadToken++
             selectedUri = it.uri
             hostedUrl = null
@@ -193,25 +239,18 @@ private fun ImageSeekApp(incomingImage: IncomingImage?) {
     }
 
     LaunchedEffect(selectedUri, quality) {
-        val uri = selectedUri ?: return@LaunchedEffect
-        val shouldCaptureOriginal = capturedDebugSources.add(uri.toString())
-        decoding = true
+        bitmap = null
+        hostedUrl = null
         error = null
+        val uri = selectedUri ?: return@LaunchedEffect
+        decoding = true
         try {
             bitmap = withContext(Dispatchers.IO) {
-                DebugLog.uriMetadata(context, uri, "selected")
-                if (shouldCaptureOriginal) {
-                    DebugLog.captureSource(context, uri, "selected")
-                } else {
-                    DebugLog.d("CAPTURE", "skip duplicate source capture uri=$uri quality=${quality.name}")
-                }
                 decodeImage(context, uri, quality.maxDimension)
             }
         } catch (cancelled: CancellationException) {
-            DebugLog.i("DECODE", "cancelled uri=$uri quality=${quality.name}")
             throw cancelled
         } catch (t: Throwable) {
-            DebugLog.exception("DECODE", t, "uri=$uri quality=${quality.name}")
             error = t.message ?: "无法读取图片"
         } finally {
             decoding = false
@@ -222,14 +261,8 @@ private fun ImageSeekApp(incomingImage: IncomingImage?) {
         ResultsScreen(
             hostedUrl = hostedUrl!!,
             engine = engine,
-            onEngineChanged = { newEngine ->
-                DebugLog.i("ENGINE", "switch result engine ${engine.name} -> ${newEngine.name}")
-                engine = newEngine
-            },
-            onBack = {
-                DebugLog.i("BACK", "leave results -> selection hostedUrl=$hostedUrl engine=${engine.name}")
-                hostedUrl = null
-            }
+            onEngineChanged = { engine = it },
+            onBack = { hostedUrl = null }
         )
         return
     }
@@ -241,35 +274,46 @@ private fun ImageSeekApp(incomingImage: IncomingImage?) {
         decoding = decoding,
         uploading = uploading,
         error = error,
-        onQualityChanged = {
-            if (!uploading) {
-                DebugLog.i("QUALITY", "${quality.name} -> ${it.name}")
-                quality = it
-            }
+        onQualityChanged = { if (!uploading) quality = it },
+        onEngineChanged = { engine = it },
+        onPickPhoto = {
+            photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
         },
-        onEngineChanged = {
-            DebugLog.i("ENGINE", "selection ${engine.name} -> ${it.name}")
-            engine = it
-        },
-        onPickPhoto = { photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
         onPickFile = { filePicker.launch(arrayOf("image/*")) },
         onSearch = {
             val currentBitmap = bitmap ?: return@SelectionScreen
-            val token = ++uploadToken
+            val currentUri = selectedUri ?: return@SelectionScreen
             val currentQuality = quality
-            error = null
-            uploading = true
-            DebugLog.i("SEARCH", "start token=$token engine=${engine.name} quality=${currentQuality.name}")
+            val cacheKey = "${currentUri}#${currentQuality.name}"
+            val now = System.currentTimeMillis()
+
+            uploadCache.entries.removeAll { it.value.expiresAtMillis <= now }
+            val cached = uploadCache[cacheKey]
+            if (cached != null) {
+                hostedUrl = cached.url
+                error = null
+                return@SelectionScreen
+            }
+
+            val token = ++uploadToken
             scope.launch {
+                error = null
+                uploading = true
                 try {
-                    val url = uploadTemporaryWithFallback(context, currentBitmap, currentQuality.jpegQuality)
-                    DebugLog.i("SEARCH", "upload success token=$token activeToken=$uploadToken url=$url")
-                    if (token == uploadToken) hostedUrl = url
+                    val result = uploadTemporaryWithFallback(currentBitmap, currentQuality.jpegQuality)
+                    if (token == uploadToken) {
+                        uploadCache[cacheKey] = UploadCacheEntry(
+                            url = result,
+                            expiresAtMillis = System.currentTimeMillis() + UPLOAD_CACHE_TTL_MS
+                        )
+                        while (uploadCache.size > UPLOAD_CACHE_MAX_ENTRIES) {
+                            uploadCache.remove(uploadCache.keys.first())
+                        }
+                        hostedUrl = result
+                    }
                 } catch (cancelled: CancellationException) {
-                    DebugLog.i("SEARCH", "cancelled token=$token")
                     throw cancelled
                 } catch (t: Throwable) {
-                    DebugLog.exception("SEARCH", t, "token=$token engine=${engine.name}")
                     if (token == uploadToken) error = t.message ?: "上传失败"
                 } finally {
                     if (token == uploadToken) uploading = false
@@ -296,36 +340,242 @@ private fun SelectionScreen(
 ) {
     Scaffold(
         contentWindowInsets = WindowInsets.safeDrawing,
-        topBar = { TopAppBar(title = { Text("图搜 · ImageSeek DEBUG") }) }
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Text("图搜 · ImageSeek", style = MaterialTheme.typography.titleLarge)
+                        Text(
+                            "多引擎反向搜图",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background
+                )
+            )
+        }
     ) { padding ->
         Column(
-            Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .verticalScroll(rememberScrollState())
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text("详细日志已开启")
-            Text("日志: ${DebugLog.location()}")
-            Text("图片处理状态: ${if (decoding) "读取中" else "空闲"}")
-            Button(onClick = onPickPhoto, enabled = !uploading) { Text("选择照片") }
-            OutlinedButton(onClick = onPickFile, enabled = !uploading) { Text("文件") }
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(Quality.entries) {
-                    FilterChip(
-                        selected = it == quality,
-                        onClick = { onQualityChanged(it) },
-                        enabled = !uploading,
-                        label = { Text("${it.title} · ${it.detail}") }
+            Column(
+                modifier = Modifier.fillMaxWidth().widthIn(max = 760.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    "一张图，七个引擎。",
+                    style = MaterialTheme.typography.headlineLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    "选择或分享图片，临时上传一次后即可快速切换 Google、Bing、Yandex、百度、TinEye、SauceNAO 与 IQDB。",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            Card(
+                modifier = Modifier.fillMaxWidth().widthIn(max = 760.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 260.dp, max = 440.dp)
+                            .clip(RoundedCornerShape(24.dp))
+                            .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+                            .clickable(
+                                enabled = !decoding && !uploading,
+                                onClick = onPickPhoto
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        when {
+                            decoding -> Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                CircularProgressIndicator()
+                                Text("正在读取图片…")
+                            }
+
+                            bitmap != null -> Image(
+                                bitmap = bitmap.asImageBitmap(),
+                                contentDescription = "待搜索图片",
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Fit
+                            )
+
+                            else -> Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.padding(28.dp)
+                            ) {
+                                Text("选择一张图片", style = MaterialTheme.typography.titleLarge)
+                                Text(
+                                    "支持系统照片选择器、文件以及其他 App 的“分享图片”入口",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    if (bitmap != null) {
+                        Text(
+                            "预处理尺寸：${bitmap.width} × ${bitmap.height}",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Button(
+                            onClick = onPickPhoto,
+                            enabled = !decoding && !uploading,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("选择照片")
+                        }
+                        OutlinedButton(
+                            onClick = onPickFile,
+                            enabled = !decoding && !uploading,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("从文件打开")
+                        }
+                    }
+                }
+            }
+
+            SectionCard("图片质量") {
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(end = 8.dp)
+                ) {
+                    items(Quality.entries) { item ->
+                        FilterChip(
+                            selected = item == quality,
+                            onClick = { onQualityChanged(item) },
+                            enabled = !uploading,
+                            label = { Text("${item.title} · ${item.detail}") }
+                        )
+                    }
+                }
+            }
+
+            SectionCard("搜索引擎") {
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(end = 8.dp)
+                ) {
+                    items(Engine.entries) { item ->
+                        FilterChip(
+                            selected = item == engine,
+                            onClick = { onEngineChanged(item) },
+                            label = { Text(item.shortTitle) }
+                        )
+                    }
+                }
+                Text("当前：${engine.title}", style = MaterialTheme.typography.titleMedium)
+            }
+
+            Card(modifier = Modifier.fillMaxWidth().widthIn(max = 760.dp)) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        "上传与隐私",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        "图片会按 ${quality.maxDimension}px 上限采样并重新编码为 JPEG，原始 EXIF/GPS 不会随原文件上传；优先使用 Litterbox 1 小时临时存储，服务异常时自动切换到 Uguu。",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "同一张图片在相同质量下会在当前会话中复用临时链接，避免切换引擎时重复上传。",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "不要搜索身份证件、医疗资料、私密照片或其他敏感内容。",
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
             }
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(Engine.entries) {
-                    FilterChip(selected = it == engine, onClick = { onEngineChanged(it) }, label = { Text(it.shortTitle) })
+
+            if (error != null) {
+                Card(
+                    modifier = Modifier.fillMaxWidth().widthIn(max = 760.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    )
+                ) {
+                    Text(
+                        text = error,
+                        modifier = Modifier.padding(16.dp),
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
                 }
             }
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            Button(onClick = onSearch, enabled = bitmap != null && !decoding && !uploading) {
-                Text(if (uploading) "上传中" else "搜索 · ${engine.shortTitle}")
+
+            Button(
+                onClick = onSearch,
+                enabled = bitmap != null && !decoding && !uploading,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 760.dp)
+                    .height(56.dp)
+            ) {
+                if (uploading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text("正在生成临时图片…")
+                } else {
+                    Text("开始搜索 · ${engine.shortTitle}")
+                }
             }
+
+            Spacer(Modifier.height(12.dp))
+        }
+    }
+}
+
+@Composable
+private fun SectionCard(
+    title: String,
+    content: @Composable () -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth().widthIn(max = 760.dp)) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            content()
         }
     }
 }
@@ -338,29 +588,26 @@ private fun ResultsScreen(
     onEngineChanged: (Engine) -> Unit,
     onBack: () -> Unit
 ) {
-    val url = remember(hostedUrl, engine) { engine.searchUrl(hostedUrl) }
+    val context = LocalContext.current
+    val searchUrl = remember(hostedUrl, engine) { engine.searchUrl(hostedUrl) }
+
     var webView by remember { mutableStateOf<WebView?>(null) }
+    var loadedTarget by remember { mutableStateOf<String?>(null) }
+    var currentUrl by remember { mutableStateOf(searchUrl) }
+    var pageError by remember { mutableStateOf<String?>(null) }
+    var generation by remember { mutableIntStateOf(0) }
 
     BackHandler(enabled = true) {
-        DebugLog.i(
-            "BACK",
-            "systemBack results currentUrl=${webView?.url} canGoBack=${webView?.canGoBack()} action=return_to_selection"
-        )
         onBack()
-    }
-
-    LaunchedEffect(engine, url) {
-        DebugLog.i("WEBVIEW", "engine=${engine.name} hostedUrl=$hostedUrl searchUrl=$url")
     }
 
     DisposableEffect(Unit) {
         onDispose {
-            webView?.let { view ->
-                DebugLog.i("WEBVIEW", "dispose url=${view.url} canGoBack=${view.canGoBack()} historySize=${view.copyBackForwardList().size}")
-                view.stopLoading()
-                view.destroy()
-            }
+            webView?.stopLoading()
+            webView?.destroy()
             webView = null
+            CookieManager.getInstance().removeAllCookies(null)
+            WebStorage.getInstance().deleteAllData()
         }
     }
 
@@ -368,108 +615,200 @@ private fun ResultsScreen(
         contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
             TopAppBar(
-                title = { Text(engine.title) },
+                title = {
+                    Text(
+                        engine.title,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                },
                 navigationIcon = {
-                    TextButton(onClick = {
-                        DebugLog.i("BACK", "toolbarBack results currentUrl=${webView?.url} action=return_to_selection")
-                        onBack()
-                    }) { Text("返回") }
+                    TextButton(onClick = onBack) {
+                        Text("返回")
+                    }
+                },
+                actions = {
+                    TextButton(onClick = { openExternal(context, currentUrl) }) {
+                        Text("浏览器")
+                    }
                 }
             )
         }
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding)) {
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                items(Engine.entries) {
-                    FilterChip(selected = it == engine, onClick = { onEngineChanged(it) }, label = { Text(it.shortTitle) })
+        Column(
+            modifier = Modifier.fillMaxSize().padding(padding)
+        ) {
+            LazyRow(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(Engine.entries) { item ->
+                    FilterChip(
+                        selected = item == engine,
+                        onClick = { onEngineChanged(item) },
+                        label = { Text(item.shortTitle) }
+                    )
                 }
             }
-            AndroidView(
-                factory = { ctx ->
-                    secureWebView(ctx).also {
-                        webView = it
-                        DebugLog.i("WEBVIEW", "loadUrl=$url")
-                        it.loadUrl(url)
-                    }
-                },
-                modifier = Modifier.fillMaxSize(),
-                update = { view ->
-                    webView = view
-                    if (view.url != url) {
-                        DebugLog.i("WEBVIEW", "switch engine loadUrl=$url old=${view.url}")
-                        view.stopLoading()
-                        view.loadUrl(url)
+
+            if (pageError != null) {
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            pageError!!,
+                            modifier = Modifier.weight(1f),
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        TextButton(
+                            onClick = {
+                                pageError = null
+                                loadedTarget = null
+                                generation++
+                            }
+                        ) {
+                            Text("重试")
+                        }
                     }
                 }
-            )
+            }
+
+            key(generation) {
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { ctx ->
+                        secureWebView(
+                            context = ctx,
+                            onUrlChanged = { currentUrl = it },
+                            onError = { pageError = it },
+                            onRendererGone = {
+                                webView = null
+                                loadedTarget = null
+                                pageError = "网页渲染进程已退出，请点击重试"
+                            }
+                        ).also { view ->
+                            webView = view
+                            loadedTarget = searchUrl
+                            view.loadUrl(searchUrl)
+                        }
+                    },
+                    update = { view ->
+                        webView = view
+                        if (loadedTarget != searchUrl) {
+                            loadedTarget = searchUrl
+                            pageError = null
+                            view.stopLoading()
+                            view.loadUrl(searchUrl)
+                        }
+                    }
+                )
+            }
         }
     }
 }
 
-private fun secureWebView(context: Context): WebView = WebView(context).apply {
+private fun secureWebView(
+    context: Context,
+    onUrlChanged: (String) -> Unit,
+    onError: (String) -> Unit,
+    onRendererGone: () -> Unit
+): WebView = WebView(context).apply {
     settings.javaScriptEnabled = true
     settings.domStorageEnabled = true
     settings.allowFileAccess = false
     settings.allowContentAccess = false
-    DebugLog.i("WEBVIEW", "created userAgent=${settings.userAgentString} js=${settings.javaScriptEnabled} dom=${settings.domStorageEnabled}")
+    settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+    settings.cacheMode = WebSettings.LOAD_DEFAULT
+    settings.setSupportMultipleWindows(false)
+    settings.javaScriptCanOpenWindowsAutomatically = false
+    settings.saveFormData = false
+    settings.safeBrowsingEnabled = true
+
+    CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
+    webChromeClient = WebChromeClient()
     webViewClient = object : WebViewClient() {
-        override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-            val blocked = request?.url?.scheme?.lowercase() != "https"
-            DebugLog.i(
-                "WEBVIEW_NAV",
-                "url=${request?.url} method=${request?.method} headers=${request?.requestHeaders} mainFrame=${request?.isForMainFrame} redirect=${request?.isRedirect} gesture=${request?.hasGesture()} blocked=$blocked"
-            )
-            return blocked
+        override fun shouldOverrideUrlLoading(
+            view: WebView?,
+            request: WebResourceRequest?
+        ): Boolean {
+            val uri = request?.url ?: return true
+            return uri.scheme?.lowercase() != "https"
         }
 
         override fun onPageFinished(view: WebView?, url: String?) {
-            DebugLog.i(
-                "WEBVIEW_PAGE",
-                "finished=$url title=${view?.title} progress=${view?.progress} canGoBack=${view?.canGoBack()} historySize=${view?.copyBackForwardList()?.size}"
-            )
+            url?.let(onUrlChanged)
         }
 
-        override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
-            val message = "mainFrame=${request?.isForMainFrame} errorCode=${error?.errorCode} description=${error?.description} url=${request?.url} headers=${request?.requestHeaders}"
+        override fun onReceivedError(
+            view: WebView?,
+            request: WebResourceRequest?,
+            error: WebResourceError?
+        ) {
             if (request?.isForMainFrame == true) {
-                DebugLog.e("WEBVIEW_ERROR", message)
-            } else {
-                DebugLog.w("WEBVIEW_SUBRESOURCE", message)
+                onError(error?.description?.toString() ?: "页面加载失败")
             }
         }
 
-        override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
-            DebugLog.e(
-                "WEBVIEW_RENDERER",
-                "gone didCrash=${detail?.didCrash()} priority=${detail?.rendererPriorityAtExit()} url=${view?.url}"
-            )
+        override fun onSafeBrowsingHit(
+            view: WebView?,
+            request: WebResourceRequest?,
+            threatType: Int,
+            callback: SafeBrowsingResponse?
+        ) {
+            callback?.backToSafety(true)
+            onError("Android Safe Browsing 已拦截风险页面")
+        }
+
+        override fun onRenderProcessGone(
+            view: WebView?,
+            detail: RenderProcessGoneDetail?
+        ): Boolean {
             view?.destroy()
+            onRendererGone()
             return true
         }
     }
 }
 
-private fun decodeImage(context: Context, uri: Uri, maxDimension: Int): Bitmap {
-    val started = System.nanoTime()
-    DebugLog.i("DECODE", "start uri=$uri maxDimension=$maxDimension")
+private fun decodeImage(
+    context: Context,
+    uri: Uri,
+    maxDimension: Int
+): Bitmap {
+    require(maxDimension in 512..4096)
     val source = ImageDecoder.createSource(context.contentResolver, uri)
+
     return ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+        decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+
         val width = info.size.width
         val height = info.size.height
-        require(width > 0 && height > 0) { "图片尺寸无效" }
-        DebugLog.i("DECODE", "header width=$width height=$height mime=${info.mimeType} colorSpace=${info.colorSpace}")
+        if (width <= 0 || height <= 0) {
+            throw IOException("图片尺寸无效")
+        }
+
         val longest = maxOf(width, height)
         if (longest > maxDimension) {
             val scale = maxDimension.toFloat() / longest
-            val targetWidth = (width * scale).roundToInt().coerceAtLeast(1)
-            val targetHeight = (height * scale).roundToInt().coerceAtLeast(1)
-            DebugLog.i("DECODE", "resize ${width}x$height -> ${targetWidth}x$targetHeight")
-            decoder.setTargetSize(targetWidth, targetHeight)
+            decoder.setTargetSize(
+                (width * scale).roundToInt().coerceAtLeast(1),
+                (height * scale).roundToInt().coerceAtLeast(1)
+            )
         }
-    }.also {
-        DebugLog.i(
-            "DECODE",
-            "complete result=${it.width}x${it.height} config=${it.config} bytes=${it.byteCount} allocationBytes=${it.allocationByteCount} elapsedMs=${(System.nanoTime() - started) / 1_000_000L}"
-        )
+    }
+}
+
+private fun openExternal(context: Context, url: String) {
+    val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return
+    if (uri.scheme?.lowercase() != "https") return
+    runCatching {
+        context.startActivity(Intent(Intent.ACTION_VIEW, uri))
     }
 }
