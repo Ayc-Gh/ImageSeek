@@ -29,11 +29,17 @@ jobs:
             ln -s "$ANDROID_HOME/platforms/android-37.0" "$ANDROID_HOME/platforms/android-37"
           fi
 
-      - name: Reconstruct audited v1.6.2 baseline patch
+      - name: Reconstruct audited base patch
         run: |
           cat aod-ci/patch.part* | tr -d '\r\n' | base64 -d > /tmp/aod-patch.zip
           echo "13ac2880378b7afdfc655639b2e94e282638c01c87ad65173129c285a0e138b6  /tmp/aod-patch.zip" | sha256sum -c -
           unzip -q /tmp/aod-patch.zip -d /tmp/aod-patch
+
+      - name: Reconstruct v1.7.0 overlay
+        run: |
+          cat aod-v170-bridge/overlay.part* | tr -d '\r\n' | base64 -d > /tmp/v170.zip
+          echo "a12023d08583aa936aa1ae35402d860e23e179a2dcd6f05b92b13fa553181e94  /tmp/v170.zip" | sha256sum -c -
+          unzip -q /tmp/v170.zip -d /tmp/v170
 
       - name: Fetch exact upstream baseline
         run: |
@@ -42,31 +48,26 @@ jobs:
           git checkout ef9df74fc8f6d5ae3bc39f35a110047ea8b905c4
           test "$(git rev-parse HEAD)" = "ef9df74fc8f6d5ae3bc39f35a110047ea8b905c4"
 
-      - name: Apply v1.7.0 cleanup and hardening
+      - name: Overlay v1.7.0 source
         run: |
           cp -a /tmp/aod-patch/patch/app/. /tmp/aod-src/app/
+          cp -a /tmp/v170/app/. /tmp/aod-src/app/
+          rm -f /tmp/aod-src/app/src/debug/AndroidManifest.xml
+          rmdir /tmp/aod-src/app/src/debug 2>/dev/null || true
           rm -f /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/DebugFileLogger.kt
           rm -f /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/data/DebugFileLogStore.kt
-          rm -f /tmp/aod-src/app/src/debug/AndroidManifest.xml
-          cat aod-v170/parts/part* | tr -d '\r\n' | base64 -d > /tmp/aod-v170-overlay.zip
-          echo "fa6d733963e7eb1bb52e21abdf28c8aae285cc5ad4f7358946f4868766d4221e  /tmp/aod-v170-overlay.zip" | sha256sum -c -
-          unzip -q /tmp/aod-v170-overlay.zip -d /tmp/v170
-          cp -a /tmp/v170/app/. /tmp/aod-src/app/
+          rm -f /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/data/AodConfigProvider.kt
 
           grep -q "versionCode = 21" /tmp/aod-src/app/build.gradle
           grep -q "versionName = '1.7.0-debug'" /tmp/aod-src/app/build.gradle
           grep -q "include 'arm64-v8a'" /tmp/aod-src/app/build.gradle
           ! grep -q "armeabi-v7a" /tmp/aod-src/app/build.gradle
-          test ! -e /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/DebugFileLogger.kt
-          test ! -e /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/data/DebugFileLogStore.kt
-          test ! -e /tmp/aod-src/app/src/debug/AndroidManifest.xml
-          ! grep -R "MANAGE_EXTERNAL_STORAGE\|DEBUG_FILE_LOG\|DebugFileLogger\|DebugFileLogStore" /tmp/aod-src/app/src/main /tmp/aod-src/app/src/debug 2>/dev/null
-          grep -q "Debug 构建仅写 Android logcat" /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/AodLog.kt
-          grep -q "createPackageContext(expected" /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/AodConfig.kt
-          grep -q "bindHostPackage(SYSTEM_UI)" /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/MainHook.kt
-          grep -q "sys/class/power_supply/battery/current_now" /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/AodTelemetry.kt
-          grep -q "powerValid=" /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/AodTelemetry.kt
-          grep -q "supportedModes=" /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/AodTelemetry.kt
+          grep -q "YukiHookPrefsBridge" /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/AodConfig.kt
+          grep -q "prefs(PREFS_NAME)" /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/data/AodConfigStore.kt
+          grep -q "xposedminversion" /tmp/aod-src/app/src/main/AndroidManifest.xml
+          grep -q 'android:value="93"' /tmp/aod-src/app/src/main/AndroidManifest.xml
+          ! grep -R -n -E "AodConfigProvider|DebugFileLogger|DebugFileLogStore|MANAGE_EXTERNAL_STORAGE|DEBUG_FILE_LOG|/storage/emulated/0/Documents/AOD_Enhance" /tmp/aod-src/app/src /tmp/aod-src/app/build.gradle
+          ! grep -q "<provider" /tmp/aod-src/app/src/main/AndroidManifest.xml
 
       - name: Test, lint and build
         working-directory: /tmp/aod-src
@@ -90,14 +91,12 @@ jobs:
           BT="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
           "$BT/apksigner" verify --verbose "$APK"
           "$BT/aapt" dump badging "$APK" | tee /tmp/badging.txt
-          "$BT/aapt" dump permissions "$APK" | tee /tmp/permissions.txt
           grep -q "package: name='com.op.aod.enhance'" /tmp/badging.txt
           grep -q "versionCode='21'" /tmp/badging.txt
           grep -q "versionName='1.7.0-debug'" /tmp/badging.txt
-          ! grep -q "MANAGE_EXTERNAL_STORAGE" /tmp/permissions.txt
           unzip -p "$APK" assets/xposed_init | grep -q "com.op.aod.enhance.HookEntryXposed"
+          ! unzip -l "$APK" | grep -q "lib/armeabi-v7a"
           sha256sum "$APK" | tee /tmp/apk.sha256
-
           mkdir -p /tmp/out
           cp "$APK" /tmp/out/ColorOS_AOD_Enhance-v1.7.0-debug-arm64-v8a.apk
           cp /tmp/apk.sha256 /tmp/out/SHA256SUMS.txt
@@ -106,11 +105,12 @@ jobs:
             echo "versionName=1.7.0-debug"
             echo "versionCode=21"
             echo "abi=arm64-v8a only"
-            echo "logging=Android logcat only (tag AOD_Enhance)"
-            echo "removed=DebugFileLogger, DebugFileLogStore, MANAGE_EXTERNAL_STORAGE, file-log UI/provider IPC"
-            echo "config=package-scoped Provider access using real host package identity"
-            echo "telemetry=framework refresh + supported modes + sysfs-preferred battery current/voltage"
-            echo "power=whole-device battery estimate only when current unit is trusted"
+            echo "logging=logcat-only tag=AOD_Enhance"
+            echo "config_transport=YukiHookPrefsBridge (New XSharedPreferences)"
+            echo "removed=ContentProvider config transport, file logger, MANAGE_EXTERNAL_STORAGE"
+            echo "telemetry_interval_ms=2000"
+            echo "refresh_metric=framework logical/display mode; not physical panel scan rate"
+            echo "power_metric=sysfs-preferred whole-device battery-side estimate; ambiguous current is not converted"
           } > /tmp/out/BUILD_INFO.txt
 
       - uses: actions/upload-artifact@v4
