@@ -58,7 +58,7 @@ tasks.matching { it.name ==~ /process(Release|Debug)Resources/ }.configureEach {
 
 android {
     namespace = 'com.op.aod.enhance'
-    compileSdk = 36
+    compileSdk = 37
 
 
     def keystoreProps = new Properties()

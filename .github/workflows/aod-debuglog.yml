@@ -23,7 +23,7 @@ jobs:
         run: |
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" "platform-tools" "platforms;android-36" "build-tools;35.0.0"
+          "$SDKMANAGER" "platform-tools" "platforms;android-37.0" "build-tools;37.0.0"
       - uses: gradle/actions/setup-gradle@v4
       - name: Unit test, lint and build
         working-directory: aod-src
@@ -32,13 +32,13 @@ jobs:
         run: |
           APK="aod-src/app/build/outputs/apk/debug/app-arm64-v8a-debug.apk"
           test -f "$APK"
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$APK"
-          BADGING=$("$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK")
+          "$ANDROID_HOME/build-tools/37.0.0/apksigner" verify --verbose "$APK"
+          BADGING=$("$ANDROID_HOME/build-tools/37.0.0/aapt" dump badging "$APK")
           echo "$BADGING" | grep "package: name='com.op.aod.enhance'"
           echo "$BADGING" | grep "versionCode='18'"
           echo "$BADGING" | grep "versionName='1.6.1-debuglog'"
-          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump permissions "$APK" | grep "android.permission.MANAGE_EXTERNAL_STORAGE"
-          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -v -c -P 16 4 "$APK"
+          "$ANDROID_HOME/build-tools/37.0.0/aapt" dump permissions "$APK" | grep "android.permission.MANAGE_EXTERNAL_STORAGE"
+          "$ANDROID_HOME/build-tools/37.0.0/zipalign" -v -c -P 16 4 "$APK"
       - uses: actions/upload-artifact@v4
         with:
           name: ColorOS-AOD-Enhance-1.6.1-debuglog
