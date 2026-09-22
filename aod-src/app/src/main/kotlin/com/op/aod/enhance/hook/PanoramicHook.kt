@@ -1,65 +1,37 @@
 package com.op.aod.enhance.hook
 
-import android.util.Log
 import com.highcapable.kavaref.KavaRef.Companion.resolve
 import com.highcapable.yukihookapi.hook.entity.YukiBaseHooker
 import com.highcapable.yukihookapi.hook.factory.toClass
-import com.op.aod.enhance.BuildConfig
 
 internal object PanoramicHook {
-
-    private val FIELD_NAMES = listOf(
-        "isSupportPanoramicAllDay",
-        "isSupportPanoramicAllDayByPanelFeature",
-        "isSupportPanoramicByPanelFeature",
-        "isSupportPanoramic"
-    )
-    private const val SMOOTH_TRANSITION_CONTROLLER = "com.oplus.systemui.aod.display.SmoothTransitionController"
+    private val FIELD_NAMES = listOf("isSupportPanoramicAllDay","isSupportPanoramicAllDayByPanelFeature","isSupportPanoramicByPanelFeature","isSupportPanoramic")
+    private const val CONTROLLER = "com.oplus.systemui.aod.display.SmoothTransitionController"
 
     fun YukiBaseHooker.hookPanoramicAllDaySupport() {
-        val clazz = runCatching {
-            SMOOTH_TRANSITION_CONTROLLER.toClass(appClassLoader).resolve()
-        }.getOrNull() ?: return
+        val clazz = runCatching { CONTROLLER.toClass(appClassLoader).resolve() }
+            .onFailure { DebugFileLogger.w("HOOK_REGISTER", "panoramic controller unavailable", it) }
+            .getOrNull() ?: return
+        DebugFileLogger.i("HOOK_REGISTER", "panoramic controller resolved")
 
-        if (BuildConfig.DEBUG) {
-            Log.d("AOD_Enhance", "AOD_PANORAMIC_HOOK: Registered")
-        }
-
-        // 一次性字段修正逻辑
-        fun applyPanoramicSupport(instance: Any) {
+        fun apply(instance: Any) {
             val cfg = AodConfigReader.read(MainHook.hostAppContext)
-            if (!cfg.enablePanoramic) return
-
+            if (!cfg.enablePanoramic) {
+                DebugFileLogger.d("PANORAMIC", "feature disabled; leaving system fields unchanged")
+                return
+            }
             val realClass = instance::class.java
+            var applied = 0
             for (name in FIELD_NAMES) {
                 runCatching {
-                    val f = realClass.getDeclaredField(name)
-                    f.isAccessible = true
-                    f.setBoolean(instance, true)
-                }
+                    realClass.getDeclaredField(name).apply { isAccessible = true }.setBoolean(instance, true)
+                    applied++
+                }.onFailure { DebugFileLogger.d("PANORAMIC", "field unavailable name=" + name) }
             }
-
-            if (BuildConfig.DEBUG) {
-                Log.d("AOD_Enhance", "AOD_PANORAMIC_HOOK: Applied panoramic support")
-            }
+            DebugFileLogger.d("PANORAMIC", "applied fields=" + applied)
         }
 
-        // Hook 1: initSmoothTransitionState — 初始化时修正（一次性）
-        runCatching {
-            clazz.firstMethod { name = "initSmoothTransitionState" }
-        }.getOrNull()?.hook {
-            after {
-                applyPanoramicSupport(instance<Any>())
-            }
-        }
-
-        // Hook 2: setPanoramicSupportedByRemote — 远程调用时修正
-        runCatching {
-            clazz.firstMethod { name = "setPanoramicSupportedByRemote" }
-        }.getOrNull()?.hook {
-            after {
-                applyPanoramicSupport(instance<Any>())
-            }
-        }
+        runCatching { clazz.firstMethod { name = "initSmoothTransitionState" } }.getOrNull()?.hook { after { apply(instance<Any>()) } }
+        runCatching { clazz.firstMethod { name = "setPanoramicSupportedByRemote" } }.getOrNull()?.hook { after { apply(instance<Any>()) } }
     }
 }
