@@ -1,0 +1,151 @@
+import java.util.Properties
+
+plugins {
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.ksp)
+}
+
+
+/**
+ * ARM64 环境 aapt2 兼容方案。
+ *
+ * AGP 内置的 aapt2 只有 x86_64 版，在 aarch64 Linux 上无法直接运行。
+ * 本脚本检测到该情况后，自动用 qemu-user 包装 aapt2 二进制。
+ *
+ * 要求：系统需安装 qemu-user-static（apt install qemu-user-static）
+ */
+def setupAapt2Wrapper() {
+    def osArch = System.getProperty("os.arch")?.toLowerCase() ?: ""
+    if (!osArch.contains("aarch64") && !osArch.contains("arm64")) return
+
+    def qemu = file("/usr/bin/qemu-x86_64-static")
+    if (!qemu.exists()) {
+        throw new GradleException(
+            "当前系统为 ARM64 架构，但缺少 qemu-x86_64-static。\n" +
+            "请运行：apt install qemu-user-static\n" +
+            "或使用 x86_64 环境构建。"
+        )
+    }
+
+    def transformDir = file("${gradle.gradleUserHomeDir}/caches/${gradle.gradleVersion}/transforms")
+    if (!transformDir.exists()) return
+
+    def count = 0
+    transformDir.eachFileRecurse { f ->
+        if (f.name == "aapt2" && f.isFile() && f.canExecute()) {
+            def backup = file("${f.absolutePath}.bin")
+            if (backup.exists()) return  // 已包装过
+            f.renameTo(backup)
+            f.text = """#!/bin/bash
+DIR="\$(dirname "\$0")"
+exec ${qemu.absolutePath} "\$DIR/aapt2.bin" "\$@"
+"""
+            f.setExecutable(true)
+            count++
+        }
+    }
+    if (count > 0) {
+        logger.lifecycle("AOD_Enhance: wrapped ${count} aapt2 binary(ies) with qemu-user")
+    }
+}
+
+// 资源处理前自动包装 aapt2（此时 Gradle 已完成 transforms 解压）
+tasks.matching { it.name ==~ /process(Release|Debug)Resources/ }.configureEach {
+    doFirst { setupAapt2Wrapper() }
+}
+
+
+android {
+    namespace = 'com.op.aod.enhance'
+    compileSdk = 37
+
+
+    def keystoreProps = new Properties()
+    def keystoreFile = rootProject.file('keystore.properties')
+    if (keystoreFile.exists()) {
+        keystoreFile.withInputStream { keystoreProps.load(it) }
+    }
+
+    signingConfigs {
+        release {
+            if (keystoreFile.exists()) {
+                storeFile file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (keystoreFile.exists()) {
+                signingConfig = signingConfigs.release
+            }
+        }
+    }
+
+    defaultConfig {
+        applicationId = 'com.op.aod.enhance'
+        minSdk = 33
+        targetSdk = 36
+        versionCode = 15
+        versionName = '1.5'
+
+    }
+
+    splits {
+        abi {
+            enable = true
+            reset()
+            include 'arm64-v8a', 'armeabi-v7a'
+            universalApk = false
+        }
+    }
+
+    buildFeatures {
+        buildConfig = true
+        compose = true
+    }
+
+    lint {
+        checkReleaseBuilds false
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation platform(libs.androidx.compose.bom)
+    implementation libs.androidx.activity.compose
+    implementation libs.androidx.compose.ui
+    implementation libs.androidx.compose.material3
+    implementation libs.androidx.compose.foundation
+    implementation libs.miuix.ui
+    implementation libs.miuix.preference
+    implementation libs.miuix.icons
+    debugImplementation libs.androidx.compose.ui.tooling
+    debugImplementation libs.androidx.compose.ui.test.manifest
+
+    implementation(libs.yukihookapi.api) {
+        exclude group: "androidx.appcompat", module: "appcompat"
+        exclude group: "com.google.android.material", module: "material"
+        exclude group: "androidx.preference", module: "preference"
+        exclude group: "androidx.fragment", module: "fragment"
+        exclude group: "androidx.activity", module: "activity"
+    }
+    implementation libs.kavaref.core
+    implementation libs.kavaref.extension
+
+    compileOnly libs.xposed.api
+    ksp libs.yukihookapi.ksp.xposed
+
+    implementation libs.androidx.core.ktx
+}

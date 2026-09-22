@@ -1,0 +1,50 @@
+# Gradle / Android build
+.gradle/
+build/
+**/build/
+local.properties
+.cxx/
+.externalNativeBuild/
+
+# IDE
+.idea/
+*.iml
+.androidide/
+.acside/
+.kotlin/
+
+# Signing
+*.jks
+*.keystore
+keystore.properties
+
+# Outputs
+*.apk
+*.aab
+*.ap_
+output-metadata.json
+
+# Logs / temp
+*.log
+captures/
+
+# Project-level Gradle init scripts (not auto-loaded)
+init.d/
+
+# Scripts
+*.sh
+
+# SystemUI 反编译（OEM 专有代码，不应分发）
+Systemui/
+
+# CodeGraph
+.codegraph/
+
+# Claude Code
+.claude/
+CLAUDE.md
+
+# Environment-specific
+gradle.properties
+/Aod/
+/Systemui/
