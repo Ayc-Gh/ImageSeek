@@ -24,7 +24,7 @@ jobs:
         run: |
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" "platform-tools" "platforms;android-37" "build-tools;36.0.0"
+          "$SDKMANAGER" "platform-tools" "platforms;android-36" "build-tools;36.0.0"
 
       - name: Reconstruct audited patch
         run: |
@@ -41,7 +41,7 @@ jobs:
 
       - name: Overlay v1.6.2 DebugLog source
         run: |
-          cp -a /tmp/aod-patch/patch/app/. /tmp/aod-src/app/
+          cp -a /tmp/aod-patch/patch/app/. /tmp/aod-src/app/\n          sed -i "s/compileSdk = 37/compileSdk = 36/" /tmp/aod-src/app/build.gradle
           grep -q "versionCode = 19" /tmp/aod-src/app/build.gradle
           grep -q "versionName = '1.6.2-debuglog'" /tmp/aod-src/app/build.gradle
           grep -q "include 'arm64-v8a'" /tmp/aod-src/app/build.gradle
