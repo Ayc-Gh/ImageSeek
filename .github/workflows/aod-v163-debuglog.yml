@@ -46,6 +46,16 @@ jobs:
         run: |
           cp -a /tmp/aod-patch/patch/app/. /tmp/aod-src/app/
           base64 -d aod-v163/DebugFileLogger.kt.b64 > /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/DebugFileLogger.kt
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('/tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/DebugFileLogger.kt')
+          s=p.read_text()
+          marker='''    fun bindContext(context: Context) {\n        boundContext.set(context.applicationContext ?: context)\n        scheduleFlush(0L)\n    }\n'''
+          compat=marker+'''\n    fun bootstrap() {\n        scheduleFlush(0L)\n    }\n\n    fun bootstrap(context: Context?) {\n        if (context != null) bindContext(context) else scheduleFlush(0L)\n    }\n'''
+          if 'fun bootstrap()' not in s:
+              s=s.replace(marker, compat)
+          p.write_text(s)
+          PY
           sed -i "s/versionCode = 19/versionCode = 20/" /tmp/aod-src/app/build.gradle
           sed -i "s/versionName = '1.6.2-debuglog'/versionName = '1.6.3-debuglog'/" /tmp/aod-src/app/build.gradle
           grep -q "versionCode = 20" /tmp/aod-src/app/build.gradle
@@ -54,6 +64,7 @@ jobs:
           ! grep -q "armeabi-v7a" /tmp/aod-src/app/build.gradle
           grep -q "createPackageContext(expectedPackage" /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/DebugFileLogger.kt
           grep -q "RETRY_MAX_MS = 30000L" /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/DebugFileLogger.kt
+          grep -q "fun bootstrap()" /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/DebugFileLogger.kt
 
       - name: Test, lint and build
         working-directory: /tmp/aod-src
