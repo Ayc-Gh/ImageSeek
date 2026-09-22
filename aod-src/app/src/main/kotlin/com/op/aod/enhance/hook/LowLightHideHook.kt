@@ -1,10 +1,8 @@
 package com.op.aod.enhance.hook
 
-import android.util.Log
 import com.highcapable.kavaref.KavaRef.Companion.resolve
 import com.highcapable.yukihookapi.hook.entity.YukiBaseHooker
 import com.highcapable.yukihookapi.hook.factory.toClass
-import com.op.aod.enhance.BuildConfig
 
 /**
  * 低光环境 AOD 保持显示 Hook。
@@ -74,15 +72,15 @@ internal object LowLightHideHook {
                         val cfg = AodConfigReader.read(MainHook.hostAppContext)
                         if (cfg.blockLowLightHide) {
                             result = true
-                            if (BuildConfig.DEBUG) {
-                                Log.d(TAG, "LowLightHide: forced needDisplayAodInSpecialRule = true")
+                            {
+                                DebugFileLogger.d("LOW_LIGHT", "LowLightHide: forced needDisplayAodInSpecialRule = true")
                             }
                         }
                     }
                 }
         }.onFailure {
-            if (BuildConfig.DEBUG) {
-                Log.d(TAG, "LowLightHide: needDisplayAodInSpecialRule hook failed, ${it.message}")
+            {
+                DebugFileLogger.d("LOW_LIGHT", "LowLightHide: needDisplayAodInSpecialRule hook failed, ${it.message}")
             }
         }
     }
@@ -115,16 +113,16 @@ internal object LowLightHideHook {
                             val originalValue = args(0).any() as? Boolean ?: return@before
                             if (originalValue) {
                                 args(0).set(false)
-                                if (BuildConfig.DEBUG) {
-                                    Log.d(TAG, "LowLightHide: forced setIsHideBySpecialRule(false), original was true")
+                                {
+                                    DebugFileLogger.d("LOW_LIGHT", "LowLightHide: forced setIsHideBySpecialRule(false), original was true")
                                 }
                             }
                         }
                     }
                 }
         }.onFailure {
-            if (BuildConfig.DEBUG) {
-                Log.d(TAG, "LowLightHide: setIsHideBySpecialRule hook failed, ${it.message}")
+            {
+                DebugFileLogger.d("LOW_LIGHT", "LowLightHide: setIsHideBySpecialRule hook failed, ${it.message}")
             }
         }
     }
@@ -155,15 +153,15 @@ internal object LowLightHideHook {
                         val cfg = AodConfigReader.read(MainHook.hostAppContext)
                         if (cfg.blockLowLightHide) {
                             result = null
-                            if (BuildConfig.DEBUG) {
-                                Log.d(TAG, "LowLightHide: blocked hideAodByDarkLight")
+                            {
+                                DebugFileLogger.d("LOW_LIGHT", "LowLightHide: blocked hideAodByDarkLight")
                             }
                         }
                     }
                 }
         }.onFailure {
-            if (BuildConfig.DEBUG) {
-                Log.d(TAG, "LowLightHide: hideAodByDarkLight hook failed (non-critical), ${it.message}")
+            {
+                DebugFileLogger.d("LOW_LIGHT", "LowLightHide: hideAodByDarkLight hook failed (non-critical), ${it.message}")
             }
         }
     }
