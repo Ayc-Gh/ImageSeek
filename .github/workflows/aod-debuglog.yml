@@ -1,0 +1,48 @@
+name: AOD DebugLog Build
+
+on:
+  push:
+    branches:
+      - tmp/aod-debuglog-build2
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Android SDK
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-37" "build-tools;35.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Unit test, lint and build
+        working-directory: aod-src
+        run: ./gradlew --no-daemon --stacktrace testDebugUnitTest lintDebug assembleDebug
+      - name: Verify APK
+        run: |
+          APK="aod-src/app/build/outputs/apk/debug/app-arm64-v8a-debug.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$APK"
+          BADGING=$("$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK")
+          echo "$BADGING" | grep "package: name='com.op.aod.enhance'"
+          echo "$BADGING" | grep "versionCode='18'"
+          echo "$BADGING" | grep "versionName='1.6.1-debuglog'"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump permissions "$APK" | grep "android.permission.MANAGE_EXTERNAL_STORAGE"
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -v -c -P 16 4 "$APK"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ColorOS-AOD-Enhance-1.6.1-debuglog
+          path: |
+            aod-src/app/build/outputs/apk/debug/app-arm64-v8a-debug.apk
+            aod-src/app/build/outputs/apk/debug/app-armeabi-v7a-debug.apk
+          if-no-files-found: error

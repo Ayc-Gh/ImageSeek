@@ -148,4 +148,5 @@ dependencies {
     ksp libs.yukihookapi.ksp.xposed
 
     implementation libs.androidx.core.ktx
+    testImplementation 'junit:junit:4.13.2'
 }
