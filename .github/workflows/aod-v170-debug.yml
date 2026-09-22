@@ -48,7 +48,9 @@ jobs:
           rm -f /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/DebugFileLogger.kt
           rm -f /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/data/DebugFileLogStore.kt
           rm -f /tmp/aod-src/app/src/debug/AndroidManifest.xml
-          unzip -q aod-v170/overlay.zip -d /tmp/v170
+          cat aod-v170/parts/part* | tr -d '\r\n' | base64 -d > /tmp/aod-v170-overlay.zip
+          echo "5eb5d5d134f557c63054cb000621d431b3dccf006956f4e584d5ad7089f4eb21  /tmp/aod-v170-overlay.zip" | sha256sum -c -
+          unzip -q /tmp/aod-v170-overlay.zip -d /tmp/v170
           cp -a /tmp/v170/app/. /tmp/aod-src/app/
 
           grep -q "versionCode = 21" /tmp/aod-src/app/build.gradle
