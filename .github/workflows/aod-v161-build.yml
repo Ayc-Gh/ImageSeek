@@ -1,9 +1,9 @@
-name: AOD v1.6.1 APK Build
+name: AOD v1.6.1 Debug File Log APK Build
 
 on:
   push:
     branches:
-      - tmp/aod-v1.6.1-build
+      - tmp/aod-v1.6.1-debuglog
   workflow_dispatch:
 
 permissions:
@@ -12,12 +12,12 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - name: Checkout build payload
         uses: actions/checkout@v4
 
-      - name: Rebuild and verify patch
+      - name: Rebuild and verify v1.6.1 patch
         shell: bash
         run: |
           set -euo pipefail
@@ -25,6 +25,15 @@ jobs:
           test "$(wc -c < /tmp/aodpatch.b64)" -eq 47576
           base64 --decode /tmp/aodpatch.b64 > /tmp/ColorOS_Aod_Enhance-v1.6.1-patch.zip
           echo "b34a68c17958c702368fd39c18d03e21b91b42cc9544a11db42677c2af0f4317  /tmp/ColorOS_Aod_Enhance-v1.6.1-patch.zip" | sha256sum -c -
+
+      - name: Rebuild and verify debug-log overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .aod-debug-overlay/chunk00 .aod-debug-overlay/chunk01 .aod-debug-overlay/chunk02 .aod-debug-overlay/chunk03 .aod-debug-overlay/chunk04 .aod-debug-overlay/chunk05 > /tmp/aod-debug-overlay.b64
+          test "$(wc -c < /tmp/aod-debug-overlay.b64)" -eq 31572
+          base64 --decode /tmp/aod-debug-overlay.b64 > /tmp/aod-debug-overlay.zip
+          echo "96192ffa62d472b9aefa44147e91956acf8f6cd2b308c12fe614cd3ffe2def70  /tmp/aod-debug-overlay.zip" | sha256sum -c -
 
       - name: Fetch audited source and apply v1.6.1
         shell: bash
@@ -39,6 +48,21 @@ jobs:
           grep -q "versionCode = 17" /tmp/aod-src/app/build.gradle
           grep -q "versionName = '1.6.1'" /tmp/aod-src/app/build.gradle
           grep -q "compileSdk = 37" /tmp/aod-src/app/build.gradle
+
+      - name: Apply Debug file-log overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/aod-debug-overlay
+          mkdir -p /tmp/aod-debug-overlay
+          unzip -q /tmp/aod-debug-overlay.zip -d /tmp/aod-debug-overlay
+          cp -a /tmp/aod-debug-overlay/. /tmp/aod-src/
+          grep -q "versionCode = 18" /tmp/aod-src/app/build.gradle
+          grep -q "versionName = '1.6.1-debuglog'" /tmp/aod-src/app/build.gradle
+          grep -q "METHOD_APPEND_DEBUG_LOG" /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/data/AodConfigProvider.kt
+          grep -q "Documents/AOD_Enhance/log" /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/data/DebugFileLogStore.kt
+          grep -q "MAX_FILE_BYTES = 8L \* 1024L \* 1024L" /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/data/DebugFileLogStore.kt
+          grep -q "MAX_FILES = 8" /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/data/DebugFileLogStore.kt
           printf '%s\n' 'org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' 'org.gradle.workers.max=2' > /tmp/aod-src/gradle.properties
 
       - name: Set up JDK 17
@@ -61,39 +85,48 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build debug APKs
+      - name: Run unit tests
         working-directory: /tmp/aod-src
         shell: bash
         run: |
           set -euo pipefail
           chmod +x gradlew
-          ./gradlew --no-daemon assembleDebug
-
-      - name: Run unit tests
-        continue-on-error: true
-        working-directory: /tmp/aod-src
-        shell: bash
-        run: ./gradlew --no-daemon testDebugUnitTest
+          ./gradlew --no-daemon testDebugUnitTest
 
       - name: Run lint
-        continue-on-error: true
         working-directory: /tmp/aod-src
         shell: bash
         run: ./gradlew --no-daemon lintDebug
 
-      - name: Collect APKs
+      - name: Build debug APKs
+        working-directory: /tmp/aod-src
+        shell: bash
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: Verify and collect APKs
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p out
-          find /tmp/aod-src/app/build/outputs/apk/debug -type f -name '*.apk' -print -exec cp {} out/ \;
+          AAPT=/usr/local/lib/android/sdk/build-tools/37.0.0/aapt
+          APKSIGNER=/usr/local/lib/android/sdk/build-tools/37.0.0/apksigner
+          : > out/BUILD_INFO.txt
+          while IFS= read -r apk; do
+            name="$(basename "$apk")"
+            cp "$apk" "out/$name"
+            echo "===== $name =====" | tee -a out/BUILD_INFO.txt
+            "$AAPT" dump badging "$apk" | grep -E "^(package:|sdkVersion:|targetSdkVersion:|native-code:)" | tee -a out/BUILD_INFO.txt
+            "$AAPT" dump badging "$apk" | grep -q "package: name='com.op.aod.enhance' versionCode='18' versionName='1.6.1-debuglog'"
+            unzip -p "$apk" assets/xposed_init | grep -q "com.op.aod.enhance.HookEntryXposed"
+            "$APKSIGNER" verify --verbose --print-certs "$apk" | tee -a out/BUILD_INFO.txt
+          done < <(find /tmp/aod-src/app/build/outputs/apk/debug -type f -name '*.apk' -print | sort)
           test -n "$(find out -maxdepth 1 -name '*.apk' -print -quit)"
           sha256sum out/*.apk | tee out/SHA256SUMS.txt
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ColorOS-AOD-Enhance-v1.6.1-debug
+          name: ColorOS-AOD-Enhance-v1.6.1-debuglog
           path: out/*
           if-no-files-found: error
           retention-days: 3
