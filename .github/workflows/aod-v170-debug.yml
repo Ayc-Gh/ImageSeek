@@ -49,7 +49,7 @@ jobs:
           rm -f /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/data/DebugFileLogStore.kt
           rm -f /tmp/aod-src/app/src/debug/AndroidManifest.xml
           cat aod-v170/parts/part* | tr -d '\r\n' | base64 -d > /tmp/aod-v170-overlay.zip
-          echo "5eb5d5d134f557c63054cb000621d431b3dccf006956f4e584d5ad7089f4eb21  /tmp/aod-v170-overlay.zip" | sha256sum -c -
+          echo "fa6d733963e7eb1bb52e21abdf28c8aae285cc5ad4f7358946f4868766d4221e  /tmp/aod-v170-overlay.zip" | sha256sum -c -
           unzip -q /tmp/aod-v170-overlay.zip -d /tmp/v170
           cp -a /tmp/v170/app/. /tmp/aod-src/app/
 
