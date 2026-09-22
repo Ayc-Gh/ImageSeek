@@ -1,0 +1,149 @@
+package com.op.aod.enhance.ui
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import com.op.aod.enhance.data.AodConfigStore
+import com.op.aod.enhance.data.AodUiConfig
+import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.CardDefaults
+import top.yukonga.miuix.kmp.basic.Scaffold
+import top.yukonga.miuix.kmp.basic.SmallTopAppBar
+import top.yukonga.miuix.kmp.preference.SwitchPreference
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.utils.overScrollVertical
+import top.yukonga.miuix.kmp.utils.scrollEndHaptic
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+
+class FeaturesActivity : ComponentActivity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            MiuixTheme {
+                FeaturesScreen(
+                    initial = AodConfigStore.read(contentResolver),
+                    onSave = { cfg -> AodConfigStore.write(contentResolver, cfg) }
+                )
+            }
+        }
+    }
+
+}
+
+@OptIn(FlowPreview::class)
+@Composable
+private fun FeaturesScreen(
+    initial: AodUiConfig,
+    onSave: (AodUiConfig) -> Unit
+) {
+    var enablePanoramic by remember { mutableStateOf(initial.enablePanoramic) }
+    var enableSettingsSupport by remember { mutableStateOf(initial.enableSettingsSupport) }
+    var blockSingleClick by remember { mutableStateOf(initial.blockSingleClick) }
+    var blockLowLightHide by remember { mutableStateOf(initial.blockLowLightHide) }
+    val currentOnSave by rememberUpdatedState(onSave)
+    val resolver = LocalContext.current.contentResolver
+
+    // 合并为单个 LaunchedEffect，使用 Triple + nested Triple 构成 Quad
+    // 避免两个 LaunchedEffect 同时触发 write() 导致 IPC update 竞态覆盖
+    @OptIn(FlowPreview::class)
+    LaunchedEffect(Unit) {
+        snapshotFlow {
+            Triple(enablePanoramic, enableSettingsSupport, Pair(blockSingleClick, blockLowLightHide))
+        }
+            .drop(1) // skip initial emission on Activity creation
+            .debounce(300)
+            .distinctUntilChanged()
+            .collect { (panoramic, settingsSupport, singleClickLowLightHide) ->
+                val base = AodConfigStore.read(resolver)
+                currentOnSave(
+                    base.copy(
+                        enablePanoramic = panoramic,
+                        enableSettingsSupport = settingsSupport,
+                        blockSingleClick = singleClickLowLightHide.first,
+                        blockLowLightHide = singleClickLowLightHide.second,
+                    )
+                )
+            }
+    }
+
+    Scaffold(
+        topBar = {
+            SmallTopAppBar(
+                title = "AOD功能设置",
+                color = MiuixTheme.colorScheme.secondaryContainer,
+            )
+        },
+        containerColor = MiuixTheme.colorScheme.secondaryContainer,
+    ) { paddingValues: PaddingValues ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxHeight()
+                .scrollEndHaptic()
+                .overScrollVertical()
+                .padding(horizontal = 12.dp),
+            contentPadding = paddingValues,
+            overscrollEffect = null,
+        ) {
+            item {
+                Card(
+                    modifier = Modifier
+                        .padding(top = 12.dp)
+                        .fillMaxWidth(),
+                    colors = CardDefaults.defaultColors(
+                        color = MiuixTheme.colorScheme.background,
+                    ),
+                ) {
+                    SwitchPreference(
+                        title = "系统界面-全天全景AOD支持",
+                        summary = "让系统界面解锁全天全景 AOD 相关能力",
+                        checked = enablePanoramic,
+                        onCheckedChange = { enablePanoramic = it },
+                    )
+                    SwitchPreference(
+                        title = "息屏-全天全景AOD开关",
+                        summary = "在息屏设置中显示全天全景 AOD 开关",
+                        checked = enableSettingsSupport,
+                        onCheckedChange = { enableSettingsSupport = it },
+                    )
+                    SwitchPreference(
+                        title = "AOD单击唤醒屏蔽",
+                        summary = "避免 AOD 单击误触导致唤醒",
+                        checked = blockSingleClick,
+                        onCheckedChange = { blockSingleClick = it },
+                    )
+                    SwitchPreference(
+                        title = "低光环境保持AOD显示",
+                        summary = "阻止极暗/夜间低光环境自动关闭 AOD",
+                        checked = blockLowLightHide,
+                        onCheckedChange = { blockLowLightHide = it },
+                    )
+                }
+            }
+
+            item {
+                Spacer(modifier = Modifier.padding(bottom = 16.dp))
+            }
+        }
+    }
+}
