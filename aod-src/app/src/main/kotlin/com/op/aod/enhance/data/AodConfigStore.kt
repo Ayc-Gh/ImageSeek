@@ -34,6 +34,9 @@ object AodConfigStore {
             put(AodConfigContract.KEY_INIT_DARK, cfg.initDark)
             put(AodConfigContract.KEY_INIT_BRIGHT, cfg.initBright)
             put(AodConfigContract.KEY_RUNNING_MULTIPLIER, cfg.runningMultiplier)
+            put(AodConfigContract.KEY_USE_SYSTEM_INIT_DARK, cfg.useSystemInitDark)
+            put(AodConfigContract.KEY_USE_SYSTEM_INIT_BRIGHT, cfg.useSystemInitBright)
+            put(AodConfigContract.KEY_USE_SYSTEM_RUNNING_MULTIPLIER, cfg.useSystemRunningMultiplier)
             put(AodConfigContract.KEY_ENABLE_PANORAMIC, cfg.enablePanoramic)
             put(AodConfigContract.KEY_ENABLE_SETTINGS_SUPPORT, cfg.enableSettingsSupport)
             put(AodConfigContract.KEY_BLOCK_SINGLE_CLICK, cfg.blockSingleClick)
@@ -50,9 +53,12 @@ object AodConfigStore {
                 if (c.moveToFirst()) {
                     val v = AodConfigContract.readRow(c)
                     AodUiConfig(
-                        initDark = v.initDark,
-                        initBright = v.initBright,
-                        runningMultiplier = v.runningMultiplier,
+                        initDark = AodValueSanitizer.sanitizeBrightness(v.initDark),
+                        initBright = AodValueSanitizer.sanitizeBrightness(v.initBright),
+                        runningMultiplier = AodValueSanitizer.sanitizeRunningMultiplier(v.runningMultiplier, AodConfigContract.DEFAULT_RUNNING_MULTIPLIER),
+                        useSystemInitDark = v.useSystemInitDark,
+                        useSystemInitBright = v.useSystemInitBright,
+                        useSystemRunningMultiplier = v.useSystemRunningMultiplier,
                         enablePanoramic = v.enablePanoramic,
                         enableSettingsSupport = v.enableSettingsSupport,
                         blockSingleClick = v.blockSingleClick,

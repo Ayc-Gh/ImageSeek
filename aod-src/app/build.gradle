@@ -93,8 +93,8 @@ android {
         applicationId = 'com.op.aod.enhance'
         minSdk = 33
         targetSdk = 36
-        versionCode = 15
-        versionName = '1.5'
+        versionCode = 18
+        versionName = '1.6.1-debuglog'
 
     }
 

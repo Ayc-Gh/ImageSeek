@@ -22,7 +22,7 @@ object AodConfigContract {
     // SharedPreferences 键名（同时作为 Cursor 列名）
     const val KEY_INIT_DARK = "init_brightness_dark"
     const val KEY_INIT_BRIGHT = "init_brightness_bright"
-    const val KEY_RUNNING_MULTIPLIER = "running_brightness_multiplier"
+    const val KEY_RUNNING_MULTIPLIER = "running_brightness_multiplier"\n    const val KEY_USE_SYSTEM_INIT_DARK = "use_system_init_dark"\n    const val KEY_USE_SYSTEM_INIT_BRIGHT = "use_system_init_bright"\n    const val KEY_USE_SYSTEM_RUNNING_MULTIPLIER = "use_system_running_multiplier"
     const val KEY_ENABLE_PANORAMIC = "enable_panoramic"
     const val KEY_ENABLE_SETTINGS_SUPPORT = "enable_settings_support"
     const val KEY_BLOCK_SINGLE_CLICK = "block_single_click"
@@ -31,7 +31,7 @@ object AodConfigContract {
     // 默认值
     const val DEFAULT_INIT_DARK = 80
     const val DEFAULT_INIT_BRIGHT = 160
-    const val DEFAULT_RUNNING_MULTIPLIER = 1.6f
+    const val DEFAULT_RUNNING_MULTIPLIER = 1.6f\n    const val DEFAULT_USE_SYSTEM_INIT_DARK = false\n    const val DEFAULT_USE_SYSTEM_INIT_BRIGHT = false\n    const val DEFAULT_USE_SYSTEM_RUNNING_MULTIPLIER = false
     const val DEFAULT_ENABLE_PANORAMIC = true
     const val DEFAULT_ENABLE_SETTINGS_SUPPORT = true
     const val DEFAULT_BLOCK_SINGLE_CLICK = true
@@ -54,6 +54,9 @@ object AodConfigContract {
                 c.getColumnIndexOrThrow(KEY_INIT_DARK),
                 c.getColumnIndexOrThrow(KEY_INIT_BRIGHT),
                 c.getColumnIndexOrThrow(KEY_RUNNING_MULTIPLIER),
+                c.getColumnIndexOrThrow(KEY_USE_SYSTEM_INIT_DARK),
+                c.getColumnIndexOrThrow(KEY_USE_SYSTEM_INIT_BRIGHT),
+                c.getColumnIndexOrThrow(KEY_USE_SYSTEM_RUNNING_MULTIPLIER),
                 c.getColumnIndexOrThrow(KEY_ENABLE_PANORAMIC),
                 c.getColumnIndexOrThrow(KEY_ENABLE_SETTINGS_SUPPORT),
                 c.getColumnIndexOrThrow(KEY_BLOCK_SINGLE_CLICK),
@@ -76,10 +79,13 @@ object AodConfigContract {
             initDark = c.getInt(indices[0]),
             initBright = c.getInt(indices[1]),
             runningMultiplier = c.getFloat(indices[2]),
-            enablePanoramic = c.getInt(indices[3]) == 1,
-            enableSettingsSupport = c.getInt(indices[4]) == 1,
-            blockSingleClick = c.getInt(indices[5]) == 1,
-            blockLowLightHide = c.getInt(indices[6]) == 1,
+            useSystemInitDark = c.getInt(indices[3]) == 1,
+            useSystemInitBright = c.getInt(indices[4]) == 1,
+            useSystemRunningMultiplier = c.getInt(indices[5]) == 1,
+            enablePanoramic = c.getInt(indices[6]) == 1,
+            enableSettingsSupport = c.getInt(indices[7]) == 1,
+            blockSingleClick = c.getInt(indices[8]) == 1,
+            blockLowLightHide = c.getInt(indices[9]) == 1,
         )
     }
 
@@ -90,6 +96,9 @@ object AodConfigContract {
         val initDark: Int,
         val initBright: Int,
         val runningMultiplier: Float,
+        val useSystemInitDark: Boolean,
+        val useSystemInitBright: Boolean,
+        val useSystemRunningMultiplier: Boolean,
         val enablePanoramic: Boolean,
         val enableSettingsSupport: Boolean,
         val blockSingleClick: Boolean,
