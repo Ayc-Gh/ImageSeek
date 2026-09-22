@@ -38,14 +38,25 @@ jobs:
           bash /tmp/aod-overlay/ColorOS_Aod_Enhance-v1.6.1-patch/apply_v1.6.1.sh /tmp/aod-src
           grep -q "versionCode = 17" /tmp/aod-src/app/build.gradle
           grep -q "versionName = '1.6.1'" /tmp/aod-src/app/build.gradle
-          sed -i 's/compileSdk = 37/compileSdk = 36/' /tmp/aod-src/app/build.gradle
-          grep -q "compileSdk = 36" /tmp/aod-src/app/build.gradle
+          grep -q "compileSdk = 37" /tmp/aod-src/app/build.gradle
+          printf '%s\n' 'org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' 'org.gradle.workers.max=2' > /tmp/aod-src/gradle.properties
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+
+      - name: Install Android 17 SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER=/usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platforms;android-37.0" "build-tools;37.0.0"
+          echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
