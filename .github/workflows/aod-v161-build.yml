@@ -21,7 +21,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat .aod-patch/chunk00 .aod-patch/chunk01 .aod-patch/chunk02 .aod-patch/chunk03 .aod-patch/chunk04 .aod-patch/chunk05 .aod-patch/chunk06 .aod-patch/chunk07-* > /tmp/aodpatch.b64
+          cat .aod-patch/chunk00 .aod-patch/chunk01 .aod-patch/chunk02 .aod-patch/chunk03 .aod-patch/chunk04 .aod-patch/chunk05 .aod-patch/chunk06-* .aod-patch/chunk07-* > /tmp/aodpatch.b64
           base64 --decode /tmp/aodpatch.b64 > /tmp/ColorOS_Aod_Enhance-v1.6.1-patch.zip
           echo "b34a68c17958c702368fd39c18d03e21b91b42cc9544a11db42677c2af0f4317  /tmp/ColorOS_Aod_Enhance-v1.6.1-patch.zip" | sha256sum -c -
 
