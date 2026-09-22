@@ -24,7 +24,7 @@ jobs:
         run: |
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+          "$SDKMANAGER" --channel=3 "platform-tools" "platforms;android-37.0" "build-tools;37.0.0"
 
       - name: Reconstruct audited patch
         run: |
@@ -42,7 +42,6 @@ jobs:
       - name: Overlay v1.6.2 DebugLog source
         run: |
           cp -a /tmp/aod-patch/patch/app/. /tmp/aod-src/app/
-          sed -i "s/compileSdk = 37/compileSdk = 36/" /tmp/aod-src/app/build.gradle
           grep -q "versionCode = 19" /tmp/aod-src/app/build.gradle
           grep -q "versionName = '1.6.2-debuglog'" /tmp/aod-src/app/build.gradle
           grep -q "include 'arm64-v8a'" /tmp/aod-src/app/build.gradle
@@ -62,6 +61,9 @@ jobs:
           test -f "$APK"
           test "$(find app/build/outputs/apk/debug -maxdepth 1 -name '*.apk' | wc -l)" -eq 1
           ! find app/build/outputs/apk -name '*armeabi*' | grep .
+          if [ -d "$ANDROID_HOME/platforms/android-37.0" ] && [ ! -e "$ANDROID_HOME/platforms/android-37" ]; then
+            ln -s "$ANDROID_HOME/platforms/android-37.0" "$ANDROID_HOME/platforms/android-37"
+          fi
           BT="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
           "$BT/apksigner" verify --verbose "$APK"
           "$BT/aapt" dump badging "$APK" | tee /tmp/badging.txt
