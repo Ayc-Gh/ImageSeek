@@ -37,7 +37,7 @@ jobs:
 
       - name: Reconstruct v1.7.0 overlay
         run: |
-          cat aod-v170-bridge/overlay.part* | tr -d '\r\n' | base64 -d > /tmp/v170.zip
+          cat aod-v170-exact/p00_* aod-v170-bridge/overlay.part01 aod-v170-bridge/overlay.part02 aod-v170-bridge/overlay.part03 aod-v170-exact/p04_* | tr -d '\\r\\n' | base64 -d > /tmp/v170.zip
           echo "a12023d08583aa936aa1ae35402d860e23e179a2dcd6f05b92b13fa553181e94  /tmp/v170.zip" | sha256sum -c -
           unzip -q /tmp/v170.zip -d /tmp/v170
 
