@@ -1,16 +1,20 @@
 package com.op.aod.enhance.hook
 
 import android.content.Context
+import android.database.ContentObserver
 import android.net.Uri
 import com.op.aod.enhance.data.AodConfigContract
+import com.op.aod.enhance.data.AodValueSanitizer
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 internal data class AodConfig(
     val initDark: Int = AodConfigContract.DEFAULT_INIT_DARK,
     val initBright: Int = AodConfigContract.DEFAULT_INIT_BRIGHT,
     val runningMultiplier: Float = AodConfigContract.DEFAULT_RUNNING_MULTIPLIER,
+    val useSystemInitDark: Boolean = AodConfigContract.DEFAULT_USE_SYSTEM_INIT_DARK,
+    val useSystemInitBright: Boolean = AodConfigContract.DEFAULT_USE_SYSTEM_INIT_BRIGHT,
+    val useSystemRunningMultiplier: Boolean = AodConfigContract.DEFAULT_USE_SYSTEM_RUNNING_MULTIPLIER,
     val enablePanoramic: Boolean = AodConfigContract.DEFAULT_ENABLE_PANORAMIC,
     val enableSettingsSupport: Boolean = AodConfigContract.DEFAULT_ENABLE_SETTINGS_SUPPORT,
     val blockSingleClick: Boolean = AodConfigContract.DEFAULT_BLOCK_SINGLE_CLICK,
@@ -18,97 +22,120 @@ internal data class AodConfig(
 )
 
 /**
- * Hook 侧配置读取器。
+ * Hook 侧跨进程配置镜像。
  *
- * 通过 ContentProvider 直读模块配置，提供 1 秒 TTL 缓存
- * 避免高频 IPC（如触摸事件触发 4 个 Hook 调用）。
- *
- * 线程安全保证：
- * - 使用 AtomicReference 存储缓存值，compareAndSet 保证写入原子性
- * - AtomicLong 存储时间戳，避免多线程同时重试 IPC
- * - 双重检查消除重复 IPC
+ * 设计目标：Hook 热路径只读内存，不做周期性 Binder IPC。
+ * - 第一次拿到宿主 Context 时注册 ContentObserver
+ * - 首次读取 Provider 后保存为 AtomicReference 快照
+ * - UI 更新 Provider 后 notifyChange，Observer 负责刷新内存快照
+ * - Provider 暂不可用时使用 5 秒退避，避免 SystemUI 启动期 IPC 风暴
+ * - ConfigRefreshGate 保证同一时刻只有一个线程刷新
  */
 internal object AodConfigReader {
 
     private val DEFAULT_CONFIG = AodConfig()
-
     private val uri: Uri = Uri.parse("content://com.op.aod.enhance.config/aod_config")
 
-    /** 上次成功读取的缓存值，IPC 失败时作为兜底。CAS 保证写入原子性。 */
     private val cachedRef = AtomicReference<AodConfig?>(null)
+    private val observerRef = AtomicReference<ContentObserver?>(null)
+    private val observerRegistered = AtomicBoolean(false)
+    private val refreshGate = ConfigRefreshGate(RETRY_BACKOFF_NS)
 
-    /** 上次成功读取的时间戳（ns），用于 TTL 判断。 */
-    private val lastReadTimeNs = AtomicLong(0)
-
-    /** 缓存有效期：1 秒内复用缓存，避免高频 IPC（如触摸事件触发 4 次 Hook 调用）。 */
-    private const val CACHE_TTL_NS = 1_000_000_000L
-
-    /** 首次读取标记，避免首次读取时因 lastReadTimeNs=0 而每次都走 IPC。 */
-    private val isFirstRead = AtomicBoolean(true)
-
-    /**
-     * 读取当前配置。
-     *
-     * 线程安全流程：
-     * - 首次读取：直读 Provider
-     * - TTL 内：返回缓存值（零 IPC，AtomicReference.get 是原子的）
-     * - TTL 外：直读 Provider 获取最新值
-     * - IPC 失败：返回缓存兜底 / DEFAULT_CONFIG
-     */
     fun read(context: Context?): AodConfig {
-        if (context == null) return DEFAULT_CONFIG
-
-        // 首次读取：绕过 TTL 检查，直接走 Provider
-        if (isFirstRead.get()) {
-            val fresh = readFromProvider(context)
-            if (fresh != null) {
-                cachedRef.set(fresh)
-                lastReadTimeNs.set(System.nanoTime())
-                isFirstRead.set(false)
-            }
-            return fresh ?: DEFAULT_CONFIG
+        if (context == null) {
+            val value = cachedRef.get() ?: DEFAULT_CONFIG
+            DebugFileLogger.d("CONFIG", "read context=null source=${if (cachedRef.get() != null) "cache" else "default"} $value")
+            return value
         }
 
-        // TTL 内：直接返回缓存值（AtomicReference.get 是原子的）
-        cachedRef.get()?.let { cachedVal ->
-            if (System.nanoTime() - lastReadTimeNs.get() < CACHE_TTL_NS) {
-                return cachedVal
+        val appContext = context.applicationContext ?: context
+        val observing = ensureObserver(appContext)
+        val cached = cachedRef.get()
+
+        // Observer 未注册时保留低频轮询兜底；缓存为空时必须尝试首次读取。
+        if (cached == null || !observing) {
+            refresh(appContext, force = false)
+        }
+        val value = cachedRef.get() ?: DEFAULT_CONFIG
+        DebugFileLogger.d(
+            "CONFIG",
+            "read source=${if (cachedRef.get() != null) "cache" else "default"} observer=$observing $value"
+        )
+        return value
+    }
+
+    private fun ensureObserver(context: Context): Boolean {
+        if (observerRegistered.get()) return true
+        if (!observerRegistered.compareAndSet(false, true)) return observerRegistered.get()
+
+        val observer = object : ContentObserver(null) {
+            override fun onChange(selfChange: Boolean, changedUri: Uri?) {
+                DebugFileLogger.d("CONFIG", "observer onChange self=$selfChange uri=$changedUri")
+                if (changedUri == null || changedUri == uri) {
+                    refresh(context, force = true)
+                }
             }
         }
 
-        // TTL 过期：重试读取
+        val registered = runCatching {
+            context.contentResolver.registerContentObserver(uri, false, observer)
+            observerRef.set(observer)
+        }.isSuccess
+
+        if (!registered) {
+            observerRegistered.set(false)
+            observerRef.set(null)
+            DebugFileLogger.w("CONFIG", "ContentObserver registration failed")
+        } else {
+            DebugFileLogger.i("CONFIG", "ContentObserver registered: $uri")
+        }
+        return registered
+    }
+
+    private fun refresh(context: Context, force: Boolean) {
+        val now = System.nanoTime()
+        if (!refreshGate.tryAcquire(now, force)) {
+            DebugFileLogger.d("CONFIG", "refresh skipped by gate force=$force")
+            return
+        }
+
+        DebugFileLogger.d("CONFIG", "refresh start force=$force")
         val fresh = readFromProvider(context)
         if (fresh != null) {
             cachedRef.set(fresh)
-            lastReadTimeNs.set(System.nanoTime())
+            refreshGate.success()
+            DebugFileLogger.i("CONFIG", "refresh success $fresh")
+        } else {
+            refreshGate.failure(now)
+            DebugFileLogger.w("CONFIG", "refresh failed; retry backoff active")
         }
-
-        return cachedRef.get() ?: DEFAULT_CONFIG
     }
 
-    /**
-     * 直读 Provider。成功时更新缓存和时间戳，失败时返回 null。
-     */
     private fun readFromProvider(context: Context): AodConfig? {
         return runCatching {
             context.contentResolver.query(uri, null, null, null, null)?.use { c ->
-                if (c.moveToFirst()) {
-                    val v = AodConfigContract.readRow(c)
-                    AodConfig(
-                        initDark = v.initDark,
-                        initBright = v.initBright,
-                        runningMultiplier = v.runningMultiplier,
-                        enablePanoramic = v.enablePanoramic,
-                        enableSettingsSupport = v.enableSettingsSupport,
-                        blockSingleClick = v.blockSingleClick,
-                        blockLowLightHide = v.blockLowLightHide,
-                    )
-                } else null
+                if (!c.moveToFirst()) return@use null
+                val v = AodConfigContract.readRow(c)
+                AodConfig(
+                    initDark = AodValueSanitizer.sanitizeBrightness(v.initDark),
+                    initBright = AodValueSanitizer.sanitizeBrightness(v.initBright),
+                    runningMultiplier = AodValueSanitizer.sanitizeRunningMultiplier(
+                        v.runningMultiplier,
+                        AodConfigContract.DEFAULT_RUNNING_MULTIPLIER,
+                    ),
+                    useSystemInitDark = v.useSystemInitDark,
+                    useSystemInitBright = v.useSystemInitBright,
+                    useSystemRunningMultiplier = v.useSystemRunningMultiplier,
+                    enablePanoramic = v.enablePanoramic,
+                    enableSettingsSupport = v.enableSettingsSupport,
+                    blockSingleClick = v.blockSingleClick,
+                    blockLowLightHide = v.blockLowLightHide,
+                )
             }
-        }.getOrNull()?.also { fresh ->
-            cachedRef.set(fresh)
-            lastReadTimeNs.set(System.nanoTime())
-            isFirstRead.set(false)
-        }
+        }.onFailure {
+            DebugFileLogger.w("CONFIG", "provider query failed", it)
+        }.getOrNull()
     }
+
+    private const val RETRY_BACKOFF_NS = 5_000_000_000L
 }
