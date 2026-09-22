@@ -58,6 +58,25 @@ jobs:
           rm -f /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/data/DebugFileLogStore.kt
           rm -f /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/data/AodConfigProvider.kt
 
+          # Migrate all inherited v1.6.x debug calls to the logcat-only logger.
+          grep -R -l "DebugFileLogger" /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook --include='*.kt' | xargs -r sed -i 's/DebugFileLogger/AodLog/g'
+
+          # Preserve the useful brightness snapshot API used by BrightnessHook, but keep it purely in memory.
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('/tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/AodTelemetry.kt')
+          s=p.read_text()
+          marker='''    @Volatile private var powerSamples = 0L\n'''
+          addition=marker+'''    @Volatile private var latestBrightness: Int? = null\n    @Volatile private var latestBrightnessPath = "NA"\n\n    fun onBrightnessEvent(path: String, brightness: Int) {\n        latestBrightnessPath = path\n        latestBrightness = brightness\n    }\n'''
+          if 'fun onBrightnessEvent(path: String, brightness: Int)' not in s:
+              s=s.replace(marker, addition)
+          needle='''                "batteryPct=${fmt(levelPct)} tempC=${fmt(tempC)} status=${batteryStatusName(status)} plugged=$plugged " +\n'''
+          repl='''                "brightness=${latestBrightness ?: "NA"} brightnessPath=$latestBrightnessPath " +\n                "batteryPct=${fmt(levelPct)} tempC=${fmt(tempC)} status=${batteryStatusName(status)} plugged=$plugged " +\n'''
+          if 'brightnessPath=$latestBrightnessPath' not in s:
+              s=s.replace(needle, repl)
+          p.write_text(s)
+          PY
+
           grep -q "versionCode = 21" /tmp/aod-src/app/build.gradle
           grep -q "versionName = '1.7.0-debug'" /tmp/aod-src/app/build.gradle
           grep -q "include 'arm64-v8a'" /tmp/aod-src/app/build.gradle
