@@ -1,0 +1,103 @@
+name: AOD v1.6.3 DebugLog CI
+
+on:
+  push:
+    branches:
+      - tmp/aod-v1.6.2-debuglog-build
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Android SDK components
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" --channel=3 "platform-tools" "platforms;android-37.0" "build-tools;37.0.0"
+          if [ -d "$ANDROID_HOME/platforms/android-37.0" ] && [ ! -e "$ANDROID_HOME/platforms/android-37" ]; then
+            ln -s "$ANDROID_HOME/platforms/android-37.0" "$ANDROID_HOME/platforms/android-37"
+          fi
+
+      - name: Reconstruct audited v1.6.2 patch
+        run: |
+          cat aod-ci/patch.part* | tr -d '\r\n' | base64 -d > /tmp/aod-patch.zip
+          echo "13ac2880378b7afdfc655639b2e94e282638c01c87ad65173129c285a0e138b6  /tmp/aod-patch.zip" | sha256sum -c -
+          unzip -q /tmp/aod-patch.zip -d /tmp/aod-patch
+
+      - name: Fetch exact upstream baseline
+        run: |
+          git clone https://github.com/Qjj7679/ColorOS_Aod_Enhance.git /tmp/aod-src
+          cd /tmp/aod-src
+          git checkout ef9df74fc8f6d5ae3bc39f35a110047ea8b905c4
+          test "$(git rev-parse HEAD)" = "ef9df74fc8f6d5ae3bc39f35a110047ea8b905c4"
+
+      - name: Overlay v1.6.3 DebugLog source
+        run: |
+          cp -a /tmp/aod-patch/patch/app/. /tmp/aod-src/app/
+          base64 -d aod-v163/DebugFileLogger.kt.b64 > /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/DebugFileLogger.kt
+          sed -i "s/versionCode = 19/versionCode = 20/" /tmp/aod-src/app/build.gradle
+          sed -i "s/versionName = '1.6.2-debuglog'/versionName = '1.6.3-debuglog'/" /tmp/aod-src/app/build.gradle
+          grep -q "versionCode = 20" /tmp/aod-src/app/build.gradle
+          grep -q "versionName = '1.6.3-debuglog'" /tmp/aod-src/app/build.gradle
+          grep -q "include 'arm64-v8a'" /tmp/aod-src/app/build.gradle
+          ! grep -q "armeabi-v7a" /tmp/aod-src/app/build.gradle
+          grep -q "createPackageContext(expectedPackage" /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/DebugFileLogger.kt
+          grep -q "RETRY_MAX_MS = 30000L" /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/DebugFileLogger.kt
+
+      - name: Test, lint and build
+        working-directory: /tmp/aod-src
+        run: |
+          chmod +x gradlew
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8
+          org.gradle.workers.max=1
+          kotlin.daemon.jvmargs=-Xmx1g
+          EOF
+          ./gradlew --no-daemon --max-workers=1 --stacktrace clean testDebugUnitTest lintDebug assembleDebug
+
+      - name: Audit APK
+        working-directory: /tmp/aod-src
+        run: |
+          set -euxo pipefail
+          APK=app/build/outputs/apk/debug/app-arm64-v8a-debug.apk
+          test -f "$APK"
+          test "$(find app/build/outputs/apk/debug -maxdepth 1 -name '*.apk' | wc -l)" -eq 1
+          ! find app/build/outputs/apk -name '*armeabi*' | grep .
+          BT="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
+          "$BT/apksigner" verify --verbose "$APK"
+          "$BT/aapt" dump badging "$APK" | tee /tmp/badging.txt
+          grep -q "package: name='com.op.aod.enhance'" /tmp/badging.txt
+          grep -q "versionCode='20'" /tmp/badging.txt
+          grep -q "versionName='1.6.3-debuglog'" /tmp/badging.txt
+          unzip -p "$APK" assets/xposed_init | grep -q "com.op.aod.enhance.HookEntryXposed"
+          sha256sum "$APK" | tee /tmp/apk.sha256
+          mkdir -p /tmp/out
+          cp "$APK" /tmp/out/ColorOS_AOD_Enhance-v1.6.3-debuglog-arm64-v8a.apk
+          cp /tmp/apk.sha256 /tmp/out/SHA256SUMS.txt
+          {
+            echo "baseline=ef9df74fc8f6d5ae3bc39f35a110047ea8b905c4"
+            echo "versionName=1.6.3-debuglog"
+            echo "versionCode=20"
+            echo "abi=arm64-v8a only"
+            echo "fix=package-scoped IPC context for SystemUI/oplus.aod"
+            echo "retry=1.5s,3s,6s,12s,24s,30s max; reset on success"
+            echo "telemetry_interval_ms=2000"
+            echo "power_metric=battery net power estimate, not panel-only power"
+          } > /tmp/out/BUILD_INFO.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ColorOS-AOD-Enhance-v1.6.3-debuglog-arm64
+          path: /tmp/out/
+          if-no-files-found: error
