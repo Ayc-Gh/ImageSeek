@@ -1,0 +1,156 @@
+name: AOD v1.8.0 Debug CI
+
+on:
+  push:
+    branches:
+      - tmp/aod-v1.8.0-debug-build
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Android SDK components
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" --channel=3 "platform-tools" "platforms;android-37.0" "build-tools;37.0.0"
+          if [ -d "$ANDROID_HOME/platforms/android-37.0" ] && [ ! -e "$ANDROID_HOME/platforms/android-37" ]; then
+            ln -s "$ANDROID_HOME/platforms/android-37.0" "$ANDROID_HOME/platforms/android-37"
+          fi
+
+      - name: Reconstruct exact v1.7.0 source
+        run: |
+          cat aod-ci/patch.part* | tr -d '\r\n' | base64 -d > /tmp/aod-patch.zip
+          echo "13ac2880378b7afdfc655639b2e94e282638c01c87ad65173129c285a0e138b6  /tmp/aod-patch.zip" | sha256sum -c -
+          unzip -q /tmp/aod-patch.zip -d /tmp/aod-patch
+          cat aod-v170-exact/p00_* aod-v170-bridge/overlay.part01 aod-v170-bridge/overlay.part02 aod-v170-bridge/overlay.part03 aod-v170-exact/p04_* | tr -d '\r\n' | base64 -d > /tmp/v170.zip
+          echo "a12023d08583aa936aa1ae35402d860e23e179a2dcd6f05b92b13fa553181e94  /tmp/v170.zip" | sha256sum -c -
+          unzip -q /tmp/v170.zip -d /tmp/v170
+          git clone https://github.com/Qjj7679/ColorOS_Aod_Enhance.git /tmp/aod-src
+          cd /tmp/aod-src
+          git checkout ef9df74fc8f6d5ae3bc39f35a110047ea8b905c4
+          cp -a /tmp/aod-patch/patch/app/. /tmp/aod-src/app/
+          cp -a /tmp/v170/app/. /tmp/aod-src/app/
+          rm -f app/src/debug/AndroidManifest.xml
+          rmdir app/src/debug 2>/dev/null || true
+          rm -f app/src/main/kotlin/com/op/aod/enhance/hook/DebugFileLogger.kt
+          rm -f app/src/main/kotlin/com/op/aod/enhance/data/DebugFileLogStore.kt
+          rm -f app/src/main/kotlin/com/op/aod/enhance/data/AodConfigProvider.kt
+          grep -R -l "DebugFileLogger" app/src/main/kotlin/com/op/aod/enhance/hook --include='*.kt' | xargs -r sed -i 's/DebugFileLogger/AodLog/g'
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/src/main/kotlin/com/op/aod/enhance/hook/AodTelemetry.kt')
+          s=p.read_text()
+          marker='''    @Volatile private var powerSamples = 0L\n'''
+          addition=marker+'''    @Volatile private var latestBrightness: Int? = null\n    @Volatile private var latestBrightnessPath = "NA"\n\n    fun onBrightnessEvent(path: String, brightness: Int) {\n        latestBrightnessPath = path\n        latestBrightness = brightness\n    }\n'''
+          if 'fun onBrightnessEvent(path: String, brightness: Int)' not in s:
+              s=s.replace(marker, addition)
+          needle='''                "batteryPct=${fmt(levelPct)} tempC=${fmt(tempC)} status=${batteryStatusName(status)} plugged=$plugged " +\n'''
+          repl='''                "brightness=${latestBrightness ?: "NA"} brightnessPath=$latestBrightnessPath " +\n                "batteryPct=${fmt(levelPct)} tempC=${fmt(tempC)} status=${batteryStatusName(status)} plugged=$plugged " +\n'''
+          if 'brightnessPath=$latestBrightnessPath' not in s:
+              s=s.replace(needle, repl)
+          p.write_text(s)
+          PY
+
+      - name: Apply v1.8.0 text-only overlay
+        run: |
+          cp aod-v180/src/AodUiConfig.kt /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/data/
+          cp aod-v180/src/AodConfigContract.kt /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/data/
+          cp aod-v180/src/AodConfigStore.kt /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/data/
+          cp aod-v180/src/AodConfig.kt /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/
+          cp aod-v180/src/MainHook.kt /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/
+          cp aod-v180/src/AodDurationHook.kt /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/
+          cp aod-v180/src/FeaturesActivity.kt /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/ui/
+          sed -i "s/versionCode = 21/versionCode = 22/" /tmp/aod-src/app/build.gradle
+          sed -i "s/versionName = '1.7.0-debug'/versionName = '1.8.0-debug'/" /tmp/aod-src/app/build.gradle
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('/tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/AodTelemetry.kt')
+          s=p.read_text()
+          s=s.replace('        val sysCurrentUa = sysCurrentRaw?.value\n','        val sysCurrentUa = sysCurrentRaw?.value\n        val sysCurrentExplicitUa = sysCurrentRaw?.path?.contains("_ua_") == true\n')
+          s=s.replace('''        val currentChoice = when {
+            sysCurrentUa != null -> CurrentChoice(sysCurrentUa, "sysfs:${sysCurrentRaw.path}", true)
+            apiCurrentRaw != null && abs(apiCurrentRaw.toLong()) >= API_CURRENT_MIN_PLAUSIBLE_UA ->
+''','''        val currentChoice = when {
+            sysCurrentUa != null && (sysCurrentExplicitUa || abs(sysCurrentUa) >= API_CURRENT_MIN_PLAUSIBLE_UA) ->
+                CurrentChoice(sysCurrentUa, "sysfs:${sysCurrentRaw.path}(uA-trusted)", true)
+            sysCurrentUa != null ->
+                CurrentChoice(sysCurrentUa, "sysfs:${sysCurrentRaw.path}(unit-ambiguous)", false)
+            apiCurrentRaw != null && abs(apiCurrentRaw.toLong()) >= API_CURRENT_MIN_PLAUSIBLE_UA ->
+''')
+          s=s.replace('''    private val SYSFS_CURRENT_PATHS = listOf(
+        "/sys/class/power_supply/battery/current_now",
+        "/sys/class/power_supply/battery/batt_current_ua_now",
+    )
+''','''    private val SYSFS_CURRENT_PATHS = listOf(
+        "/sys/class/power_supply/battery/batt_current_ua_now",
+        "/sys/class/power_supply/battery/current_now",
+    )
+''')
+          p.write_text(s)
+          PY
+          grep -q "versionCode = 22" /tmp/aod-src/app/build.gradle
+          grep -q "versionName = '1.8.0-debug'" /tmp/aod-src/app/build.gradle
+          grep -q "DURATION_MODE_30_SECONDS" /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/data/AodConfigContract.kt
+          grep -q "AOD_DURATION_EXPIRED" /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/AodDurationHook.kt
+          grep -q "Duration.Limit" /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/MainHook.kt
+          grep -q "unit-ambiguous" /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/AodTelemetry.kt
+          ! grep -R -n -E "AodConfigProvider|DebugFileLogger|DebugFileLogStore|MANAGE_EXTERNAL_STORAGE|DEBUG_FILE_LOG" /tmp/aod-src/app/src /tmp/aod-src/app/build.gradle
+
+      - name: Test lint and build
+        working-directory: /tmp/aod-src
+        run: |
+          chmod +x gradlew
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8
+          org.gradle.workers.max=1
+          kotlin.daemon.jvmargs=-Xmx1g
+          EOF
+          ./gradlew --no-daemon --max-workers=1 --stacktrace clean testDebugUnitTest lintDebug assembleDebug
+
+      - name: Audit APK
+        working-directory: /tmp/aod-src
+        run: |
+          set -euxo pipefail
+          APK=app/build/outputs/apk/debug/app-arm64-v8a-debug.apk
+          test -f "$APK"
+          test "$(find app/build/outputs/apk/debug -maxdepth 1 -name '*.apk' | wc -l)" -eq 1
+          ! find app/build/outputs/apk -name '*armeabi*' | grep .
+          BT="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
+          "$BT/apksigner" verify --verbose "$APK"
+          "$BT/aapt" dump badging "$APK" | tee /tmp/badging.txt
+          grep -q "package: name='com.op.aod.enhance'" /tmp/badging.txt
+          grep -q "versionCode='22'" /tmp/badging.txt
+          grep -q "versionName='1.8.0-debug'" /tmp/badging.txt
+          unzip -p "$APK" assets/xposed_init | grep -q "com.op.aod.enhance.HookEntryXposed"
+          ! unzip -l "$APK" | grep -q "lib/armeabi-v7a"
+          sha256sum "$APK" | tee /tmp/apk.sha256
+          mkdir -p /tmp/out
+          cp "$APK" /tmp/out/ColorOS_AOD_Enhance-v1.8.0-debug-arm64-v8a.apk
+          cp /tmp/apk.sha256 /tmp/out/SHA256SUMS.txt
+          {
+            echo "versionName=1.8.0-debug"
+            echo "versionCode=22"
+            echo "abi=arm64-v8a only"
+            echo "logging=logcat-only tag=AOD_Enhance"
+            echo "duration_modes=system,30s,1m,5m,10m,30m,60m,always,custom(1-1440m)"
+            echo "duration_semantics=max session duration; system exits still win"
+            echo "duration_expiry=DreamService.finish"
+            echo "power_fix=ambiguous low-magnitude current values are not converted to mW"
+          } > /tmp/out/BUILD_INFO.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ColorOS-AOD-Enhance-v1.8.0-debug-arm64
+          path: /tmp/out/
+          if-no-files-found: error
