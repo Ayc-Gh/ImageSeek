@@ -1,0 +1,11 @@
+# NOTICE
+
+ImageSeek is a modified work based on **Circle To Search** by AKS-Labs.
+
+- Upstream project: https://github.com/AKS-Labs/CircleToSearch
+- Upstream license: GNU General Public License v3.0 (GPL-3.0)
+- This repository remains licensed under GPL-3.0.
+
+ImageSeek substantially changes the original interaction model into a low-permission Android reverse-image-search application centered on system photo/file selection and Android image sharing. The current implementation adds a seven-engine search flow, temporary image hosting with retry/fallback handling, image re-encoding, upload reuse within the current app session, hardened WebView settings, and Android 16-oriented behavior.
+
+The upstream authors retain copyright in their original work. Copyright in later modifications belongs to their respective contributors.
