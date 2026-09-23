@@ -30,25 +30,24 @@ jobs:
         with:
           gradle-version: '8.13'
 
-      - name: Build and lint
-        run: gradle --no-daemon --stacktrace clean testDebugUnitTest lintDebug assembleDebug
+      - name: Build release and lint
+        run: gradle --no-daemon --stacktrace clean testDebugUnitTest lintRelease assembleRelease
 
-      - name: Audit APK
+      - name: Audit unsigned release APK
         run: |
           set -euo pipefail
-          APK=app/build/outputs/apk/debug/app-debug.apk
+          APK=app/build/outputs/apk/release/app-release-unsigned.apk
           test -f "$APK"
           BADGING=$("$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK")
           echo "$BADGING" | grep -q "package: name='com.akslabs.multiimagesearch'"
           echo "$BADGING" | grep -q "versionCode='212'"
           echo "$BADGING" | grep -q "versionName='2.1.2'"
           echo "$BADGING" | grep -q "targetSdkVersion:'36'"
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$APK"
           "$ANDROID_HOME/build-tools/35.0.0/zipalign" -v -c -P 16 4 "$APK"
           sha256sum "$APK"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ImageSeek-2.1.2
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: ImageSeek-2.1.2-release-unsigned
+          path: app/build/outputs/apk/release/app-release-unsigned.apk
           if-no-files-found: error
