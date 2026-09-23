@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -65,3 +65,25 @@ jobs:
           name: Android-build-tools-35-signing
           path: signing-tools
           if-no-files-found: error
+
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Publish v2.1.2 GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view v2.1.2 >/dev/null 2>&1; then
+            echo "v2.1.2 already exists"
+            exit 0
+          fi
+          gh release create v2.1.2 \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "ImageSeek 2.1.2" \
+            --notes-file RELEASE_NOTES_2.1.2.md
