@@ -144,16 +144,6 @@ jobs:
           EOF
           ./gradlew --no-daemon --max-workers=1 --stacktrace clean testDebugUnitTest lintRelease assembleRelease
 
-        working-directory: /tmp/aod-src
-        run: |
-          chmod +x gradlew
-          cat > gradle.properties <<'EOF'
-          org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8
-          org.gradle.workers.max=1
-          kotlin.daemon.jvmargs=-Xmx1g
-          EOF
-          ./gradlew --no-daemon --max-workers=1 --stacktrace clean testDebugUnitTest lintDebug assembleDebug
-
       - name: Audit release APK
         working-directory: /tmp/aod-src
         run: |
