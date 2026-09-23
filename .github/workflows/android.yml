@@ -14,28 +14,41 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
+
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
+
       - name: Android SDK
         run: |
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platform-tools" "platforms;android-36" "build-tools;35.0.0"
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
-      - name: Build
+
+      - name: Build and lint
         run: gradle --no-daemon --stacktrace clean testDebugUnitTest lintDebug assembleDebug
-      - name: Audit
+
+      - name: Audit APK
         run: |
+          set -euo pipefail
           APK=app/build/outputs/apk/debug/app-debug.apk
           test -f "$APK"
-          $ANDROID_HOME/build-tools/35.0.0/apksigner verify --verbose "$APK"
-          $ANDROID_HOME/build-tools/35.0.0/aapt dump badging "$APK" | grep "versionName='2.1.1'"
-          $ANDROID_HOME/build-tools/35.0.0/zipalign -v -c -P 16 4 "$APK"
+          BADGING=$("$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK")
+          echo "$BADGING" | grep -q "package: name='com.akslabs.multiimagesearch'"
+          echo "$BADGING" | grep -q "versionCode='212'"
+          echo "$BADGING" | grep -q "versionName='2.1.2'"
+          echo "$BADGING" | grep -q "targetSdkVersion:'36'"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -v -c -P 16 4 "$APK"
+          sha256sum "$APK"
+
       - uses: actions/upload-artifact@v4
         with:
-          name: ImageSeek-2.1.1-debug-log
+          name: ImageSeek-2.1.2
           path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
