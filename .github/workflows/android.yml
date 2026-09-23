@@ -46,8 +46,21 @@ jobs:
           "$ANDROID_HOME/build-tools/35.0.0/zipalign" -v -c -P 16 4 "$APK"
           sha256sum "$APK"
 
+      - name: Stage Android signing tools
+        run: |
+          mkdir -p signing-tools/lib
+          cp "$ANDROID_HOME/build-tools/35.0.0/apksigner" signing-tools/
+          cp "$ANDROID_HOME/build-tools/35.0.0/lib/apksigner.jar" signing-tools/lib/
+          cp "$ANDROID_HOME/build-tools/35.0.0/zipalign" signing-tools/
+
       - uses: actions/upload-artifact@v4
         with:
           name: ImageSeek-2.1.2-release-unsigned
           path: app/build/outputs/apk/release/app-release-unsigned.apk
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Android-build-tools-35-signing
+          path: signing-tools
           if-no-files-found: error
