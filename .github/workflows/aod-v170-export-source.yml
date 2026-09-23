@@ -1,0 +1,63 @@
+name: Export AOD v1.7.0 Source
+
+on:
+  push:
+    branches:
+      - tmp/aod-v1.7.0-debug-build
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Reconstruct audited base patch
+        run: |
+          cat aod-ci/patch.part* | tr -d '\r\n' | base64 -d > /tmp/aod-patch.zip
+          echo "13ac2880378b7afdfc655639b2e94e282638c01c87ad65173129c285a0e138b6  /tmp/aod-patch.zip" | sha256sum -c -
+          unzip -q /tmp/aod-patch.zip -d /tmp/aod-patch
+      - name: Reconstruct v1.7.0 overlay
+        run: |
+          cat aod-v170-exact/p00_* aod-v170-bridge/overlay.part01 aod-v170-bridge/overlay.part02 aod-v170-bridge/overlay.part03 aod-v170-exact/p04_* | tr -d '\r\n' | base64 -d > /tmp/v170.zip
+          echo "a12023d08583aa936aa1ae35402d860e23e179a2dcd6f05b92b13fa553181e94  /tmp/v170.zip" | sha256sum -c -
+          unzip -q /tmp/v170.zip -d /tmp/v170
+      - name: Rebuild exact v1.7.0 source
+        run: |
+          git clone https://github.com/Qjj7679/ColorOS_Aod_Enhance.git /tmp/aod-src
+          cd /tmp/aod-src
+          git checkout ef9df74fc8f6d5ae3bc39f35a110047ea8b905c4
+          cp -a /tmp/aod-patch/patch/app/. /tmp/aod-src/app/
+          cp -a /tmp/v170/app/. /tmp/aod-src/app/
+          rm -f /tmp/aod-src/app/src/debug/AndroidManifest.xml
+          rmdir /tmp/aod-src/app/src/debug 2>/dev/null || true
+          rm -f /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/DebugFileLogger.kt
+          rm -f /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/data/DebugFileLogStore.kt
+          rm -f /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/data/AodConfigProvider.kt
+          grep -R -l "DebugFileLogger" /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook --include='*.kt' | xargs -r sed -i 's/DebugFileLogger/AodLog/g'
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('/tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/AodTelemetry.kt')
+          s=p.read_text()
+          marker='''    @Volatile private var powerSamples = 0L\n'''
+          addition=marker+'''    @Volatile private var latestBrightness: Int? = null\n    @Volatile private var latestBrightnessPath = "NA"\n\n    fun onBrightnessEvent(path: String, brightness: Int) {\n        latestBrightnessPath = path\n        latestBrightness = brightness\n    }\n'''
+          if 'fun onBrightnessEvent(path: String, brightness: Int)' not in s:
+              s=s.replace(marker, addition)
+          needle='''                "batteryPct=${fmt(levelPct)} tempC=${fmt(tempC)} status=${batteryStatusName(status)} plugged=$plugged " +\n'''
+          repl='''                "brightness=${latestBrightness ?: "NA"} brightnessPath=$latestBrightnessPath " +\n                "batteryPct=${fmt(levelPct)} tempC=${fmt(tempC)} status=${batteryStatusName(status)} plugged=$plugged " +\n'''
+          if 'brightnessPath=$latestBrightnessPath' not in s:
+              s=s.replace(needle, repl)
+          p.write_text(s)
+          PY
+      - name: Upload source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: AOD-v1.7.0-source-snapshot
+          path: |
+            /tmp/aod-src/app/build.gradle
+            /tmp/aod-src/app/src/main/AndroidManifest.xml
+            /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/data/
+            /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/hook/
+            /tmp/aod-src/app/src/main/kotlin/com/op/aod/enhance/ui/
+          if-no-files-found: error
