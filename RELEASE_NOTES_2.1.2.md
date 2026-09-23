@@ -48,7 +48,7 @@
 APK SHA-256：
 
 ```text
-ef1852ea1c8ed875492f68680b47018ba6aaa761b58bc86f69d5b9998d1b9547
+0c0149be33ee860afe91e42083bad36c71910906d46e7be5ad9ea5c309d165c6
 ```
 
 ## 隐私说明
@@ -58,3 +58,16 @@ ef1852ea1c8ed875492f68680b47018ba6aaa761b58bc86f69d5b9998d1b9547
 ## License
 
 GPL-3.0。ImageSeek 是 AKS-Labs/CircleToSearch 的修改作品，详见 LICENSE 与 NOTICE。
+
+
+## 固定发行签名
+
+本版本建立了长期固定的 release 签名链：
+
+- RSA 4096-bit
+- APK Signature Scheme v3
+- 证书 SHA-256：
+  `41:79:9F:10:29:28:43:07:16:85:0B:DB:CE:22:EC:DE:31:3E:56:B9:FF:E0:83:36:0B:96:EF:15:BE:40:71:62`
+- 16 KiB zipalign：通过
+
+后续正式版本必须继续使用同一私钥签名，才能直接覆盖升级。
